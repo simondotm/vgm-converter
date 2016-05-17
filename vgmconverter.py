@@ -77,16 +77,8 @@ class VgmStream:
 	vgm_frequency = 44100
 	play_frequency = 50 #50 # resample to N hz
 
-	FORCE_BBC_MODE = True # forces clock speed & register settings in output vgm. Also retunes tone frequencies if the clock speed of the VGM is different
-	ENABLE_RETUNE = True	# enables re-tuning of the VGM to suit different clock speeds
 	OPTIMIZE_COMMANDS = True # if true will optimize any redundant register writes that occur when the song is quantized
 	RETUNE_PERIODIC = True	# if true will attempt to retune any use of the periodic noise effect
-
-	FILTER_CHANNEL0 = False
-	FILTER_CHANNEL1 = False
-	FILTER_CHANNEL2 = False
-	FILTER_CHANNEL3 = False	
-	
 	VERBOSE = False
 	
 	# VGM file identifier
@@ -308,25 +300,14 @@ class VgmStream:
 			self.dual_chip_mode_enabled = False
 			print "Dual Chip Mode Disabled - DC Commands will be removed"
 
-		# take a copy of the clock speed for this VGM
+		# take a copy of the clock speed for the VGM processor functions
 		self.vgm_source_clock = self.metadata['sn76489_clock']
-
-		# force beeb mode
-		if self.FORCE_BBC_MODE == True:
-			self.metadata['sn76489_feedback'] = 0x0003	# 0x0006 for	SN76494, SN76496
-			self.metadata['sn76489_clock'] = 0x003d0900	# 4Mhz on Beeb, usually 3.579545MHz (NTSC) for Sega-based PSG tunes
-			self.metadata['sn76489_shift_register_width'] = 15	# 16 for Sega
-		
-		
-		self.vgm_target_clock = self.metadata['sn76489_clock']
+		self.vgm_target_clock = self.vgm_source_clock
 		
 		# Parse GD3 data and the VGM commands
 		self.parse_gd3()
 		self.parse_commands()
 		
-	def log(self, msg):
-		if VERBOSE == True:
-			print msg
 
 	def validate_vgm_data(self):
 		# Save the current position of the VGM data
@@ -624,15 +605,65 @@ class VgmStream:
 		vgm_file.close()
 		
 	#-------------------------------------------------------------------------------------------------
+	def set_beeb_mode(self):
+		# force beeb mode
+		self.metadata['sn76489_feedback'] = 0x0003	# 0x0006 for	SN76494, SN76496
+		self.metadata['sn76489_clock'] = 0x003d0900	# 4Mhz on Beeb, usually 3.579545MHz (NTSC) for Sega-based PSG tunes
+		self.metadata['sn76489_shift_register_width'] = 15	# 16 for Sega	
+		self.vgm_target_clock = self.metadata['sn76489_clock']
 
+	#-------------------------------------------------------------------------------------------------
+	def set_verbose(self, verbose):
+		self.VERBOSE = verbose
+		
+	#-------------------------------------------------------------------------------------------------
+		
+	# helper function
+	# given a start offset (default 0) into the command list, find the next index where
+	# the command matches search_command or return -1 if no more of these commands can be found.
+	def find_next_command(self, search_command, offset = 0):
+		for j in range(offset, len(self.command_list)):
+			c = self.command_list[j]["command"]
+			
+			# only process write data commands
+			if c == search_command:
+				return j
+		else:
+			return -1
+	
+	#-------------------------------------------------------------------------------------------------
+	
+	# iterate through the command list, removing any write commands that are destined for filter_channel_id
+	def filter_channel(self, filter_channel_id):
+		filtered_command_list = []
+		j = 0
+		latched_channel = 0
+		for q in self.command_list:
+			
+			# only process write data commands
+			if q["command"] != struct.pack('B', 0x50):
+				filtered_command_list.append(q)
+			else:
+				# Check if LATCH/DATA write 								
+				qdata = q["data"]
+				qw = int(binascii.hexlify(qdata), 16)
+				if qw & 128:					
+					# Get channel id and latch it
+					latched_channel = (qw>>5)&3
+					
+				if latched_channel != filter_channel_id:
+					filtered_command_list.append(q)
+		
+		self.command_list = filtered_command_list
 
+			
+	
+	#-------------------------------------------------------------------------------------------------
+	
 	def retune(self):
 	
 		# total number of commands in the vgm stream
 		num_commands = len(self.command_list)
-
-		# total number of samples in the vgm stream
-		total_samples = int(self.metadata['total_samples'])
 
 		# re-tune any tone commands if target clock is different to source clock
 		# i think it's safe to do this in the quantized packets we've created, as they tend to be completed within a single time slot
@@ -816,7 +847,9 @@ class VgmStream:
 								if self.VERBOSE: print "SINGLE REGISTER TONE WRITE on CHANNEL " + str(latched_channel)
 
 							if self.VERBOSE: print "new_freq=" + format(new_freq, 'x') + ", lo_data=" + format(lo_data, '02x') + ", hi_data=" + format(hi_data, '02x')
-	
+		else:
+			print "retune() - No retuning necessary as target clock matches source clock"
+			
 	#-------------------------------------------------------------------------------------------------
 	
 	def quantize(self):
@@ -836,17 +869,12 @@ class VgmStream:
 
 		unhandled_commands = 0
 
-
 		# first step is to quantize the command stream to the playback rate rather than the sample rate
 
 		output_command_list = []
 
-
-
-		latched_channel = 0	
 						
 		accumulated_time = 0
-		latched_channel = 0
 		# process the entire vgm
 		while playback_time < total_samples:
 
@@ -969,24 +997,7 @@ class VgmStream:
 											quantized_command_list = temp_command_list							
 						
 						# add the latest command to the list
-						
-						# Apply channel filtering if required
-						if w & 128:
-							# Get channel id
-							latched_channel = (w>>5)&3
-							
-						filtered = False
-						if latched_channel == 0 and self.FILTER_CHANNEL0 == True:
-							filtered = True
-						if latched_channel == 1 and self.FILTER_CHANNEL1 == True:
-							filtered = True
-						if latched_channel == 2 and self.FILTER_CHANNEL2 == True:
-							filtered = True
-						if latched_channel == 3 and self.FILTER_CHANNEL3 == True:
-							filtered = True
-						
-						if filtered == False:
-							quantized_command_list.append( { 'command' : command, 'data' : data } )
+						quantized_command_list.append( { 'command' : command, 'data' : data } )
 					else:
 						if pcommand == "61":
 							scommand = "WAIT"
@@ -1446,15 +1457,22 @@ filename = "chris.vgm"
 
 output_filename = "test.vgm"
 
-vgm_data = VgmStream(filename)
-print vgm_data.metadata
-print vgm_data.gd3_data
+# process the VGM
+vgm_stream = VgmStream(filename)
+print vgm_stream.metadata
+print vgm_stream.gd3_data
+vgm_stream.filter_channel(0)
+vgm_stream.filter_channel(1)
+vgm_stream.filter_channel(3)
 
-vgm_data.retune()
-#vgm_data.quantize()
-#vgm_data.analyse()
+vgm_stream.set_beeb_mode()
+vgm_stream.retune()
 
-vgm_data.write_vgm(output_filename)
+#vgm_stream.set_verbose(True)
+#vgm_stream.quantize()
+
+#vgm_stream.analyse()
+vgm_stream.write_vgm(output_filename)
 
 
 
