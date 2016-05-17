@@ -656,58 +656,33 @@ class VgmStream:
 				output_freq = 0
 				if latched_tone_frequencies[latched_channel] > 0:
 				
-					# compute corrected frequency of current tone
+					# compute correct hz frequency of current tone from formula:
+					#
+					# hz =     Clock        Or for periodic noise:  hz =   Clock              where SR is 15 or 16 depending on chip
+					#      -------------                                 ------------------
+					#      ( 2 x N x 16)                                 ( 2 x N x 16 x SR)
+					
 					hz = float(self.vgm_source_clock) / ( 2.0 * float(latched_tone_frequencies[latched_channel]) * 16.0)
-					#clock_ratio = float(self.vgm_source_clock) / float(self.vgm_target_clock)
 
-					tune_ratio = 1.0
-					if self.RETUNE_PERIODIC == True:	
-						# to use the periodic noise effect as a bass line, it uses the tone on channel 2 to drive PN frequency on channel 3
-						# typically tracks that use this effect will disable the volume of channel 2
-						# we detect this case and detune channel 2 tone by a further 6.25% to fix the tuning
-						if latched_channel == 2 and latched_volumes[2] == 15:	
-						
-							if True:
-								noise_ratio = (15.0 / 16.0) * (float(self.vgm_source_clock) / float(self.vgm_target_clock))
-								if self.VERBOSE: print "noise_ratio=" + str(noise_ratio)
-								v = float(latched_tone_frequencies[latched_channel]) / noise_ratio
-								if self.VERBOSE: print "original freq=" + str(latched_tone_frequencies[latched_channel]) + ", new freq=" + str(v)
-								#tune_ratio = 1.0/noise_ratio #hz /= noise_ratio
-							else:
-								noise_hz_source = float(self.vgm_source_clock) / ( 2.0 * float(latched_tone_frequencies[2]) * 16.0 * 16.0)
-								if self.VERBOSE: print "noise_hz_source=" + str(noise_hz_source) + ", v_source=" + str(latched_tone_frequencies[2])
-								# calculate how to generate the same frequency on the new clockrate
-								v = float(self.vgm_target_clock) / (2.0 * noise_hz_source * 16.0 * 15.0)
-								hz = float(self.vgm_target_clock) / ( 2.0 * v * 16.0)
-								noise_hz_target = float(self.vgm_target_clock) / ( 2.0 * v * 16.0 * 15.0)
-								if self.VERBOSE: print "noise_hz_target=" + str(hz) + ", v_target=" + str(v) + ", noise_hz_target=" + str(noise_hz_target)
-								
-								# let calc below convert new hz to a value
-								#noise_hz_target = float(self.vgm_target_clock) / ( 2.0 * float(latched_tone_frequencies[2]) * 16.0 * 15.0)
-								#noise_ratio = noise_hz_source / noise_hz_target
-								
-								#if self.VERBOSE: print "noise_ratio=" + str(noise_ratio)
-						
-								#hz = (hz * clock_ratio) / 1.0625 # - hz*0.0625 # detune by 1/15 to compensate for shorter shift register (15bits instead of 16)
-								#tune_ratio = (1.0 + (1.0 - 15.0/16.0)) * (1.0 + (1.0 - clock_ratio)) #(1 + 0.0625*0.5) #* clock_ratio
-								#hz = hz * noise_ratio #/ 16.0 #1.0625 #- hz * 0.0625
 
-							
-							if self.VERBOSE: print "retuned periodic noise effect on channel 2"										
-
-						else:
+					# to use the periodic noise effect as a bass line, it uses the tone on channel 2 to drive PN frequency on channel 3
+					# when the clock is different, the PN is different, so we have to apply a further correction
+					# typically tracks that use this effect will disable the volume of channel 2
+					# we detect this case and detune channel 2 tone by a further amount to correct for this
+					if self.RETUNE_PERIODIC == True and latched_channel == 2 and latched_volumes[2] == 15:	
 					
-					
-							# compute register value for generating the same frequency using the target chip's clock rate
-							if self.VERBOSE: print "hz=" + str(hz)
-							v = float(self.vgm_target_clock) / (2.0 * hz * 16.0 )
-							#v *= tune_ratio
-							if self.VERBOSE: print "v=" + str(v)
+						noise_ratio = (15.0 / 16.0) * (float(self.vgm_source_clock) / float(self.vgm_target_clock))
+						v = float(latched_tone_frequencies[latched_channel]) / noise_ratio
+						if self.VERBOSE: print "noise_ratio=" + str(noise_ratio)
+						if self.VERBOSE: print "original freq=" + str(latched_tone_frequencies[latched_channel]) + ", new freq=" + str(v)
+						if self.VERBOSE: print "retuned periodic noise effect on channel 2"										
+
 					else:
-						# compute register value for generating the same frequency using the target chip's clock rate
+				
+						# compute corrected tone register value for generating the same frequency using the target chip's clock rate
 						if self.VERBOSE: print "hz=" + str(hz)
 						v = float(self.vgm_target_clock) / (2.0 * hz * 16.0 )
-						if self.VERBOSE: print "v=" + str(v)										
+						if self.VERBOSE: print "v=" + str(v)
 					
 					
 
@@ -718,8 +693,8 @@ class VgmStream:
 						output_freq = latched_tone_frequencies[latched_channel]
 					else:
 						# due to the integer maths, some precision is lost at the lower end
-						output_freq = int(round(v)) #int(math.ceil(v))	
-						# limit range to 10 bits
+						output_freq = int(round(v))	# using round minimizes error margin at lower precision
+						# clamp range to 10 bits
 						if output_freq > 1023:
 							output_freq = 1023
 					
@@ -773,6 +748,32 @@ class VgmStream:
 							
 							# look ahead, and see if the next command is a DATA write as if so, this will be part of the same tone commmand
 							# so load this into our register as well so that we have the correct tone frequency to work with
+							
+							# sanity check - detect if ratio of DATA writes is 1:1 with LATCH writes
+							nindex = n
+							dcount = 0
+							while (nindex < (len(self.command_list)-1)):# check we dont overflow the array, bail if we do, since it means we didn't find any further DATA writes.
+								nindex += 1
+
+								ncommand = self.command_list[nindex]["command"]
+								# skip any non-VGM-write commands
+								if ncommand != struct.pack('B', 0x50):
+									continue
+								else:
+									# found the next VGM write command
+									ndata = self.command_list[nindex]["data"]
+
+									# Check if next this is a DATA write, and capture frequency if so
+									# otherwise, its a LATCH/DATA write, so no additional frequency to process
+									nw = int(binascii.hexlify(ndata), 16)
+									if (nw & 128) == 0:
+										dcount += 1
+									else:
+										#if dcount > 1:
+										print "DCOUNT=" + str(dcount) #DANGER WILL ROBINSON"
+										break
+							
+							
 							multi_write = False
 							nindex = n
 							while (nindex < (len(self.command_list)-1)):# check we dont overflow the array, bail if we do, since it means we didn't find any further DATA writes.
@@ -1433,14 +1434,15 @@ filename = "vgms/sms/09 - 13 Ken's Theme.vgm"
 filename = "vgms/ntsc/15 Diamond Maze.vgm"
 filename = "vgms/ntsc/01 Game Start.vgm"
 
-#filename = "vgms/ntsc/MISSION76496.vgm"
+
 #filename = "vgms/ntsc/ne7-magic_beansmaster_system_psg.vgm"
 filename = "vgms/ntsc/Chris Kelly - SMS Power 15th Anniversary Competitions - Collision Chaos.vgz"
 #filename = "vgms/ntsc/BotB 16439 Chip Champion - frozen dancehall of the pharaoh.vgm" # pathological fail, uses the built-in periodic noises which are tuned differently
 
 #filename = "pn.vgm"
 filename = "vgms/ntsc/en vard fyra javel.vgm"
-#filename = "chris.vgm"
+filename = "chris.vgm"
+#filename = "vgms/ntsc/MISSION76496.vgm"
 
 output_filename = "test.vgm"
 
