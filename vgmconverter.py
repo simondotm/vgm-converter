@@ -1,5 +1,5 @@
 # python script to convert PSG VGM files to compact resampled BBC Micro files
-# http://www.smspower.org/Development/SN76489#PlayingSamplesOnThePSG
+# http://www.smspower.org/Development/SN76489
 # http://vgmrips.net/wiki/VGM_Specification
 # http://vgmrips.net/packs/pack/svc-motm
 # http://www.wothke.ch/webvgm/
@@ -27,8 +27,10 @@ else:
 #-----------------------------------------------------------------------------
 
 
-class VersionError(Exception):
+class FatalError(Exception):
 	pass
+
+
 
 
 class VgmStream:
@@ -77,9 +79,11 @@ class VgmStream:
 	vgm_frequency = 44100
 	play_frequency = 50 #50 # resample to N hz
 
+	# script options
 	OPTIMIZE_COMMANDS = True # if true will optimize any redundant register writes that occur when the song is quantized
 	RETUNE_PERIODIC = True	# if true will attempt to retune any use of the periodic noise effect
 	VERBOSE = False
+	STRIP_GD3 = False	
 	
 	# VGM file identifier
 	vgm_magic_number = b'Vgm '
@@ -279,10 +283,25 @@ class VgmStream:
 		# Parse the VGM metadata and validate the VGM version
 		self.parse_metadata()
 		
-		print self.metadata
-		print "Version " + "%x" % int(self.metadata['version'])
+		# Display info about the file
 		
+		print "  VGM file loaded : '" + vgm_filename + "'"
+		print "      VGM Version : " + "%x" % int(self.metadata['version'])
+		print "VGM SN76489 clock : " + str(float(self.metadata['sn76489_clock'])/1000000) + " MHz"
+		print "         VGM Rate : " + str(float(self.metadata['rate'])) + " Hz"
+		print "      VGM Samples : " + str(int(self.metadata['total_samples'])) + " (" + str(int(self.metadata['total_samples'])/44100) + " seconds)"
+
+
+
+
+
+
+		# Validation to check we can parse it
 		self.validate_vgm_version()
+
+		# Sanity check this VGM is suitable for this script - must be SN76489 only
+		if self.metadata['sn76489_clock'] == 0 or self.metadata['ym2413_clock'] !=0 or self.metadata['ym2413_clock'] !=0 or self.metadata['ym2413_clock'] !=0:
+			raise FatalError("This script only supports VGM's for SN76489 PSG")		
 		
 		# see if this VGM uses Dual Chip mode
 		if (self.metadata['sn76489_clock'] & 0x40000000) == 0x40000000:
@@ -290,7 +309,7 @@ class VgmStream:
 		else:
 			self.dual_chip_mode_enabled = False
 			
-		print "VGM Dual Chip Mode=" + str(self.dual_chip_mode_enabled)
+		print "    VGM Dual Chip : " + str(self.dual_chip_mode_enabled)
 		
 
 		# override/disable dual chip commands in the output stream if required
@@ -308,6 +327,9 @@ class VgmStream:
 		self.parse_gd3()
 		self.parse_commands()
 		
+		print "   VGM Commands # : " + str(len(self.command_list))
+		print ""
+
 
 	def validate_vgm_data(self):
 		# Save the current position of the VGM data
@@ -364,7 +386,7 @@ class VgmStream:
 	def validate_vgm_version(self):
 		if self.metadata['version'] not in self.supported_ver_list:
 			print "VGM version is not supported"
-			raise VersionError('VGM version is not supported')
+			raise FatalError('VGM version is not supported')
 
 	def parse_gd3(self):
 		# Save the current position of the VGM data
@@ -521,7 +543,8 @@ class VgmStream:
 			
 			
 	def write_vgm(self, filename):
-	
+			
+		print "   VGM Processing : Writing output VGM file '" + filename + "'"
 		vgm_stream = bytearray()
 
 		# convert the VGM command list to a byte array
@@ -543,38 +566,45 @@ class VgmStream:
 			if (data != None):
 				vgm_stream.extend(data)
 		
+		vgm_stream_length = len(vgm_stream)		
+
 		# build the GD3 data block
 		gd3_data = bytearray()
-		gd3_data.extend(self.gd3_data['title_eng'] + b'\x00\x00')
-		gd3_data.extend(self.gd3_data['title_jap'] + b'\x00\x00')
-		gd3_data.extend(self.gd3_data['game_eng'] + b'\x00\x00')
-		gd3_data.extend(self.gd3_data['game_jap'] + b'\x00\x00')
-		gd3_data.extend(self.gd3_data['console_eng'] + b'\x00\x00')
-		gd3_data.extend(self.gd3_data['console_jap'] + b'\x00\x00')
-		gd3_data.extend(self.gd3_data['artist_eng'] + b'\x00\x00')
-		gd3_data.extend(self.gd3_data['artist_jap'] + b'\x00\x00')
-		gd3_data.extend(self.gd3_data['date'] + b'\x00\x00')
-		gd3_data.extend(self.gd3_data['vgm_creator'] + b'\x00\x00')
-		gd3_data.extend(self.gd3_data['notes'] + b'\x00\x00')
+		gd3_stream = bytearray()	
+		gd3_stream_length = 0
 		
-		gd3_stream = bytearray()
-		gd3_stream.extend('Gd3 ')
-		gd3_stream.extend(struct.pack('I', 0x100))				# GD3 version
-		gd3_stream.extend(struct.pack('I', len(gd3_data)))		# GD3 length		
-		gd3_stream.extend(gd3_data)
-
-		# build the full VGM stream
-		vgm_stream_length = len(vgm_stream)
-		bg3_stream_length = len(gd3_stream)
-		print bg3_stream_length
+		gd3_offset = 0
+		if self.STRIP_GD3 == False:
+			gd3_data.extend(self.gd3_data['title_eng'] + b'\x00\x00')
+			gd3_data.extend(self.gd3_data['title_jap'] + b'\x00\x00')
+			gd3_data.extend(self.gd3_data['game_eng'] + b'\x00\x00')
+			gd3_data.extend(self.gd3_data['game_jap'] + b'\x00\x00')
+			gd3_data.extend(self.gd3_data['console_eng'] + b'\x00\x00')
+			gd3_data.extend(self.gd3_data['console_jap'] + b'\x00\x00')
+			gd3_data.extend(self.gd3_data['artist_eng'] + b'\x00\x00')
+			gd3_data.extend(self.gd3_data['artist_jap'] + b'\x00\x00')
+			gd3_data.extend(self.gd3_data['date'] + b'\x00\x00')
+			gd3_data.extend(self.gd3_data['vgm_creator'] + b'\x00\x00')
+			gd3_data.extend(self.gd3_data['notes'] + b'\x00\x00')
+			
+			gd3_stream.extend('Gd3 ')
+			gd3_stream.extend(struct.pack('I', 0x100))				# GD3 version
+			gd3_stream.extend(struct.pack('I', len(gd3_data)))		# GD3 length		
+			gd3_stream.extend(gd3_data)		
+			
+			gd3_offset = (64-20) + vgm_stream_length
+			gd3_stream_length = len(gd3_stream)
+		else:
+			print "   VGM Processing : GD3 tag was stripped"
 		
+		# build the full VGM output stream		
 		vgm_data = bytearray()
 		vgm_data.extend(self.vgm_magic_number)
-		vgm_data.extend(struct.pack('I', 64 + vgm_stream_length + bg3_stream_length - 4))				# EoF offset
+		vgm_data.extend(struct.pack('I', 64 + vgm_stream_length + gd3_stream_length - 4))				# EoF offset
 		vgm_data.extend(struct.pack('I', 0x00000151))		# Version
 		vgm_data.extend(struct.pack('I', self.metadata['sn76489_clock']))
 		vgm_data.extend(struct.pack('I', self.metadata['ym2413_clock']))
-		vgm_data.extend(struct.pack('I', (64-20) + vgm_stream_length))				# GD3 offset
+		vgm_data.extend(struct.pack('I', gd3_offset))				# GD3 offset
 		vgm_data.extend(struct.pack('I', self.metadata['total_samples']))				# total samples
 		vgm_data.extend(struct.pack('I', 0)) #self.metadata['loop_offset']))				# loop offset
 		vgm_data.extend(struct.pack('I', 0)) #self.metadata['loop_samples']))				# loop # samples
@@ -588,21 +618,21 @@ class VgmStream:
 		vgm_data.extend(struct.pack('I', 0))				# SEGA PCM clock	
 		vgm_data.extend(struct.pack('I', 0))				# SPCM interface	
 
-		# attach the vgm data stream
+		# attach the vgm data
 		vgm_data.extend(vgm_stream)
 
-		# attach the vgm gd3 block
-		vgm_data.extend(gd3_stream)
+		# attach the vgm gd3 tag if required
+		if self.STRIP_GD3 == False:
+			vgm_data.extend(gd3_stream)
 		
-
-			
-			
-		
-		print self.metadata
-		
+		# write to output file
 		vgm_file = open(filename, 'wb')
 		vgm_file.write(vgm_data)
 		vgm_file.close()
+		
+		print "   VGM Processing : Written " + str(int(len(vgm_data))) + " bytes, GD3 tag used " + str(gd3_stream_length) + " bytes"
+		
+		print "All done."
 		
 	#-------------------------------------------------------------------------------------------------
 	def set_beeb_mode(self):
@@ -635,6 +665,8 @@ class VgmStream:
 	
 	# iterate through the command list, removing any write commands that are destined for filter_channel_id
 	def filter_channel(self, filter_channel_id):
+		print "   VGM Processing : Filtering channel " + str(filter_channel_id)
+	
 		filtered_command_list = []
 		j = 0
 		latched_channel = 0
@@ -661,7 +693,7 @@ class VgmStream:
 	#-------------------------------------------------------------------------------------------------
 	
 	def retune(self):
-	
+		
 		# total number of commands in the vgm stream
 		num_commands = len(self.command_list)
 
@@ -670,6 +702,9 @@ class VgmStream:
 		# (eg. little or no chance of a multi-tone LATCH+DATA write being split by a wait command)
 
 		if (self.vgm_source_clock != self.vgm_target_clock):
+		
+			print "   VGM Processing : Re-tuning VGM to new clock speed"
+			print "   VGM Processing : Original clock " + str(float(self.vgm_source_clock)/1000000.0) + " MHz, Target Clock " + str(float(self.vgm_target_clock)/1000000.0) + " MHz"
 		
 			# used by the clock retuning code, initialized once at the start of the song, so that latched register states are preserved across the song
 			latched_tone_frequencies = [0, 0, 0, 0]
@@ -685,7 +720,9 @@ class VgmStream:
 				# compute the correct frequency
 				# first check it is not 0 (illegal value)
 				output_freq = 0
-				if latched_tone_frequencies[latched_channel] > 0:
+				if latched_tone_frequencies[latched_channel] == 0:
+					if self.VERBOSE: print "Zero frequency tone detected on channel " + str(latched_channel)
+				else:
 				
 					# compute correct hz frequency of current tone from formula:
 					#
@@ -693,15 +730,16 @@ class VgmStream:
 					#      -------------                                 ------------------
 					#      ( 2 x N x 16)                                 ( 2 x N x 16 x SR)
 					
-					hz = float(self.vgm_source_clock) / ( 2.0 * float(latched_tone_frequencies[latched_channel]) * 16.0)
 
 
 					# to use the periodic noise effect as a bass line, it uses the tone on channel 2 to drive PN frequency on channel 3
 					# when the clock is different, the PN is different, so we have to apply a further correction
 					# typically tracks that use this effect will disable the volume of channel 2
 					# we detect this case and detune channel 2 tone by a further amount to correct for this
-					if self.RETUNE_PERIODIC == True and latched_channel == 2 and latched_volumes[2] == 15:	
+					is_periodic_noise_tone = latched_channel == 2 and latched_volumes[2] == 15 #and (latched_tone_frequencies[3] & 3 == 3)
 					
+					if self.RETUNE_PERIODIC == True and is_periodic_noise_tone:	
+						print "Periodic noise"
 						noise_ratio = (15.0 / 16.0) * (float(self.vgm_source_clock) / float(self.vgm_target_clock))
 						v = float(latched_tone_frequencies[latched_channel]) / noise_ratio
 						if self.VERBOSE: print "noise_ratio=" + str(noise_ratio)
@@ -709,8 +747,9 @@ class VgmStream:
 						if self.VERBOSE: print "retuned periodic noise effect on channel 2"										
 
 					else:
-				
+						print "Tone"				
 						# compute corrected tone register value for generating the same frequency using the target chip's clock rate
+						hz = float(self.vgm_source_clock) / ( 2.0 * float(latched_tone_frequencies[latched_channel]) * 16.0)
 						if self.VERBOSE: print "hz=" + str(hz)
 						v = float(self.vgm_target_clock) / (2.0 * hz * 16.0 )
 						if self.VERBOSE: print "v=" + str(v)
@@ -733,8 +772,8 @@ class VgmStream:
 					hz1 = float(self.vgm_source_clock) / (2.0 * float(latched_tone_frequencies[latched_channel]) * 16.0) # target frequency
 					hz2 = float(self.vgm_target_clock) / (2.0 * float(output_freq) * 16.0)
 					if self.VERBOSE: print "channel=" + str(latched_channel) + ", old frequency=" + str(latched_tone_frequencies[latched_channel]) + ", new frequency=" + str(new_freq) + ", source_clock=" + str(self.vgm_source_clock) + ", target_clock=" + str(self.vgm_target_clock) + ", src_hz=" + str(hz1) + ", tgt_hz=" + str(hz2)
-				else:
-					if self.VERBOSE: print "Zero frequency tone detected on channel " + str(latched_channel)
+
+
 				
 				return output_freq		
 
@@ -777,33 +816,34 @@ class VgmStream:
 							qfreq = (qw & 0b00001111)
 							latched_tone_frequencies[latched_channel] = (latched_tone_frequencies[latched_channel] & 0b1111110000) | qfreq
 							
-							# look ahead, and see if the next command is a DATA write as if so, this will be part of the same tone commmand
-							# so load this into our register as well so that we have the correct tone frequency to work with
 							
 							# sanity check - detect if ratio of DATA writes is 1:1 with LATCH writes
-							nindex = n
-							dcount = 0
-							while (nindex < (len(self.command_list)-1)):# check we dont overflow the array, bail if we do, since it means we didn't find any further DATA writes.
-								nindex += 1
+							if False:
+								nindex = n
+								dcount = 0
+								while (nindex < (len(self.command_list)-1)):# check we dont overflow the array, bail if we do, since it means we didn't find any further DATA writes.
+									nindex += 1
 
-								ncommand = self.command_list[nindex]["command"]
-								# skip any non-VGM-write commands
-								if ncommand != struct.pack('B', 0x50):
-									continue
-								else:
-									# found the next VGM write command
-									ndata = self.command_list[nindex]["data"]
-
-									# Check if next this is a DATA write, and capture frequency if so
-									# otherwise, its a LATCH/DATA write, so no additional frequency to process
-									nw = int(binascii.hexlify(ndata), 16)
-									if (nw & 128) == 0:
-										dcount += 1
+									ncommand = self.command_list[nindex]["command"]
+									# skip any non-VGM-write commands
+									if ncommand != struct.pack('B', 0x50):
+										continue
 									else:
-										#if dcount > 1:
-										print "DCOUNT=" + str(dcount) #DANGER WILL ROBINSON"
-										break
-							
+										# found the next VGM write command
+										ndata = self.command_list[nindex]["data"]
+
+										# Check if next this is a DATA write, and capture frequency if so
+										# otherwise, its a LATCH/DATA write, so no additional frequency to process
+										nw = int(binascii.hexlify(ndata), 16)
+										if (nw & 128) == 0:
+											dcount += 1
+										else:
+											#if dcount > 1:
+											print "DCOUNT=" + str(dcount) #DANGER WILL ROBINSON"
+											break
+								
+							# look ahead, and see if the next command is a DATA write as if so, this will be part of the same tone commmand
+							# so load this into our register as well so that we have the correct tone frequency to work with
 							
 							multi_write = False
 							nindex = n
@@ -854,6 +894,7 @@ class VgmStream:
 	
 	def quantize(self):
 				
+		print "   VGM Processing : Quantizing VGM to " + str(self.play_frequency) + " Hz"
 
 		# total number of commands in the vgm stream
 		num_commands = len(self.command_list)
@@ -1451,7 +1492,7 @@ filename = "vgms/ntsc/Chris Kelly - SMS Power 15th Anniversary Competitions - Co
 #filename = "vgms/ntsc/BotB 16439 Chip Champion - frozen dancehall of the pharaoh.vgm" # pathological fail, uses the built-in periodic noises which are tuned differently
 
 #filename = "pn.vgm"
-filename = "vgms/ntsc/en vard fyra javel.vgm"
+#filename = "vgms/ntsc/en vard fyra javel.vgm"
 filename = "chris.vgm"
 #filename = "vgms/ntsc/MISSION76496.vgm"
 
@@ -1459,16 +1500,16 @@ output_filename = "test.vgm"
 
 # process the VGM
 vgm_stream = VgmStream(filename)
-print vgm_stream.metadata
-print vgm_stream.gd3_data
+#print vgm_stream.metadata
+#print vgm_stream.gd3_data
 vgm_stream.filter_channel(0)
 vgm_stream.filter_channel(1)
-vgm_stream.filter_channel(3)
+#vgm_stream.filter_channel(3)
 
 vgm_stream.set_beeb_mode()
+vgm_stream.set_verbose(True)
 vgm_stream.retune()
 
-#vgm_stream.set_verbose(True)
 #vgm_stream.quantize()
 
 #vgm_stream.analyse()
