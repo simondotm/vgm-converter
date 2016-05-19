@@ -426,6 +426,11 @@ class VgmStream:
 				current_field += char
 
 		# Once all the fields have been parsed, create a dict with the data
+		# some Gd3 tags dont have notes section
+		gd3_notes = ''
+		if len(gd3_fields) > 10:
+			gd3_notes = gd3_fields[10]
+			
 		self.gd3_data = {
 			'title_eng': gd3_fields[0],
 			'title_jap': gd3_fields[1],
@@ -437,7 +442,7 @@ class VgmStream:
 			'artist_jap': gd3_fields[7],
 			'date': gd3_fields[8],
 			'vgm_creator': gd3_fields[9],
-			'notes': gd3_fields[10],
+			'notes': gd3_notes,
 		}
 
 		# Seek back to the original position in the VGM data
@@ -771,7 +776,7 @@ class VgmStream:
 					
 					hz1 = float(self.vgm_source_clock) / (2.0 * float(latched_tone_frequencies[latched_channel]) * 16.0) # target frequency
 					hz2 = float(self.vgm_target_clock) / (2.0 * float(output_freq) * 16.0)
-					if self.VERBOSE: print "channel=" + str(latched_channel) + ", old frequency=" + str(latched_tone_frequencies[latched_channel]) + ", new frequency=" + str(new_freq) + ", source_clock=" + str(self.vgm_source_clock) + ", target_clock=" + str(self.vgm_target_clock) + ", src_hz=" + str(hz1) + ", tgt_hz=" + str(hz2)
+					if self.VERBOSE: print "channel=" + str(latched_channel) + ", old frequency=" + str(latched_tone_frequencies[latched_channel]) + ", new frequency=" + str(output_freq) + ", source_clock=" + str(self.vgm_source_clock) + ", target_clock=" + str(self.vgm_target_clock) + ", src_hz=" + str(hz1) + ", tgt_hz=" + str(hz2)
 
 
 				
@@ -1495,6 +1500,7 @@ filename = "vgms/ntsc/Chris Kelly - SMS Power 15th Anniversary Competitions - Co
 #filename = "vgms/ntsc/en vard fyra javel.vgm"
 filename = "chris.vgm"
 #filename = "vgms/ntsc/MISSION76496.vgm"
+#filename = "vgms/ntsc/fluid.vgm"
 
 output_filename = "test.vgm"
 
