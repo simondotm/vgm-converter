@@ -717,16 +717,16 @@ class VgmStream:
 			latched_channel = 0		
 
 			# helper function
-			# calculates a retuned tone frequency based on current state of latched tone, volume & channel registers
+			# calculates a retuned tone frequency based on given frequency & periodic noise indication
 			# returns retuned frequency. 
 			# does not change any external state
-			def recalc_frequency():
+			def recalc_frequency(tone_frequency, is_periodic_noise_tone = False):
 			
 				# compute the correct frequency
 				# first check it is not 0 (illegal value)
 				output_freq = 0
-				if latched_tone_frequencies[latched_channel] == 0:
-					if self.VERBOSE: print "Zero frequency tone detected on channel " + str(latched_channel)
+				if tone_frequency == 0:
+					if self.VERBOSE: print "Zero frequency tone detected on channel "# + str(latched_channel)
 				else:
 				
 					# compute correct hz frequency of current tone from formula:
@@ -735,50 +735,31 @@ class VgmStream:
 					#      -------------                                 ------------------
 					#      ( 2 x N x 16)                                 ( 2 x N x 16 x SR)
 					
-
-
-					# to use the periodic noise effect as a bass line, it uses the tone on channel 2 to drive PN frequency on channel 3
-					# when the clock is different, the PN is different, so we have to apply a further correction
-					# typically tracks that use this effect will disable the volume of channel 2
-					# we detect this case and detune channel 2 tone by a further amount to correct for this
-					is_periodic_noise_tone = latched_channel == 2 and latched_volumes[2] == 15 and (latched_tone_frequencies[3] & 3 == 3)
-					
 					if self.RETUNE_PERIODIC == True and is_periodic_noise_tone:	
 						print "Periodic noise"
 						noise_ratio = (15.0 / 16.0) * (float(self.vgm_source_clock) / float(self.vgm_target_clock))
-						v = float(latched_tone_frequencies[latched_channel]) / noise_ratio
+						v = float(tone_frequency) / noise_ratio
 						if self.VERBOSE: print "noise_ratio=" + str(noise_ratio)
-						if self.VERBOSE: print "original freq=" + str(latched_tone_frequencies[latched_channel]) + ", new freq=" + str(v)
+						if self.VERBOSE: print "original freq=" + str(tone_frequency) + ", new freq=" + str(v)
 						if self.VERBOSE: print "retuned periodic noise effect on channel 2"										
 
 					else:
 						print "Tone"				
 						# compute corrected tone register value for generating the same frequency using the target chip's clock rate
-						hz = float(self.vgm_source_clock) / ( 2.0 * float(latched_tone_frequencies[latched_channel]) * 16.0)
+						hz = float(self.vgm_source_clock) / ( 2.0 * float(tone_frequency) * 16.0)
 						if self.VERBOSE: print "hz=" + str(hz)
 						v = float(self.vgm_target_clock) / (2.0 * hz * 16.0 )
 						if self.VERBOSE: print "v=" + str(v)
 					
+					# due to the integer maths, some precision is lost at the lower end
+					output_freq = int(round(v))	# using round minimizes error margin at lower precision
+					# clamp range to 10 bits
+					if output_freq > 1023:
+						output_freq = 1023
 					
-
-						
-					
-					# leave channel 3 (noise channel) alone.. it's not a frequency
-					if latched_channel == 3:
-						output_freq = latched_tone_frequencies[latched_channel]
-					else:
-						# due to the integer maths, some precision is lost at the lower end
-						output_freq = int(round(v))	# using round minimizes error margin at lower precision
-						# clamp range to 10 bits
-						if output_freq > 1023:
-							output_freq = 1023
-					
-					
-					hz1 = float(self.vgm_source_clock) / (2.0 * float(latched_tone_frequencies[latched_channel]) * 16.0) # target frequency
+					hz1 = float(self.vgm_source_clock) / (2.0 * float(tone_frequency) * 16.0) # target frequency
 					hz2 = float(self.vgm_target_clock) / (2.0 * float(output_freq) * 16.0)
-					if self.VERBOSE: print "channel=" + str(latched_channel) + ", old frequency=" + str(latched_tone_frequencies[latched_channel]) + ", new frequency=" + str(output_freq) + ", source_clock=" + str(self.vgm_source_clock) + ", target_clock=" + str(self.vgm_target_clock) + ", src_hz=" + str(hz1) + ", tgt_hz=" + str(hz2)
-
-
+					if self.VERBOSE: print "channel=" + str(latched_channel) + ", old frequency=" + str(tone_frequency) + ", new frequency=" + str(output_freq) + ", source_clock=" + str(self.vgm_source_clock) + ", target_clock=" + str(self.vgm_target_clock) + ", src_hz=" + str(hz1) + ", tgt_hz=" + str(hz2)
 				
 				return output_freq		
 
@@ -876,7 +857,19 @@ class VgmStream:
 								
 							
 							# calculate the correct retuned frequncy for this channel	
-							new_freq = recalc_frequency()
+							
+							# to use the periodic noise effect as a bass line, it uses the tone on channel 2 to drive PN frequency on channel 3
+							# when the clock is different, the PN is different, so we have to apply a further correction
+							# typically tracks that use this effect will disable the volume of channel 2
+							# we detect this case and detune channel 2 tone by a further amount to correct for this
+							is_periodic_noise_tone = latched_channel == 2 and latched_volumes[2] == 15 and (latched_tone_frequencies[3] & 3 == 3)
+
+					
+							# leave channel 3 (noise channel) alone.. it's not a frequency
+							if latched_channel == 3:
+								new_freq = latched_tone_frequencies[latched_channel]
+							else:					
+								new_freq = recalc_frequency(latched_tone_frequencies[latched_channel], is_periodic_noise_tone)
 							
 							# write back the command(s) with the correct frequency
 							lo_data = (qw & 0b11110000) | (new_freq & 0b00001111)
