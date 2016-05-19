@@ -741,7 +741,7 @@ class VgmStream:
 					# when the clock is different, the PN is different, so we have to apply a further correction
 					# typically tracks that use this effect will disable the volume of channel 2
 					# we detect this case and detune channel 2 tone by a further amount to correct for this
-					is_periodic_noise_tone = latched_channel == 2 and latched_volumes[2] == 15 #and (latched_tone_frequencies[3] & 3 == 3)
+					is_periodic_noise_tone = latched_channel == 2 and latched_volumes[2] == 15 and (latched_tone_frequencies[3] & 3 == 3)
 					
 					if self.RETUNE_PERIODIC == True and is_periodic_noise_tone:	
 						print "Periodic noise"
@@ -895,6 +895,132 @@ class VgmStream:
 		else:
 			print "retune() - No retuning necessary as target clock matches source clock"
 			
+	#-------------------------------------------------------------------------------------------------
+	# iterate through the command list, removing anything we consider to be "redundant" (ie. multiple writes to the same register within a single wait period)
+	def optimize(self):
+		print "   VGM Processing : Optimizing VGM "
+
+		# total number of commands in the vgm stream
+		num_commands = len(self.command_list)
+
+
+		optimized_command_list = []
+		output_command_list = []
+
+		
+		for i in range(num_commands):
+			
+			# fetch next command & associated data
+			command = self.command_list[i]["command"]
+			data = self.command_list[i]["data"]
+			
+			# process the command
+			# writes get accumulated into time slots
+
+
+			pcommand = binascii.hexlify(command)
+			# write command - add to optimized command list, removing any it replaces
+			if pcommand == "50":
+
+				pdata = binascii.hexlify(data)
+				w = int(pdata, 16)	
+
+
+				if (len(optimized_command_list) > 0):					
+					# first check for volume writes as these are easier
+
+					# Check if LATCH/DATA write enabled - since this is the start of a write command
+					if w & 128:
+						# Get channel id
+						channel = (w>>5)&3
+
+						# Check if VOLUME flag set
+						if (w & 16):
+							# scan previous commands to see if same channel volume has been set
+							# if so, remove the previous one
+							temp_command_list = []
+							for c in optimized_command_list:
+								qdata = c["data"]
+								qw = int(binascii.hexlify(qdata), 16)
+								redundant = False
+								
+								# Check if LATCH/DATA write enabled 
+								if qw & 128:
+							
+								
+									# Check if VOLUME flag set
+									if (qw & 16):
+										# Get channel id
+										qchannel = (qw>>5)&3
+										if (qchannel == channel):
+											redundant = True
+								
+								# we cant remove the item directly from optimized_command_list since we are iterating through it
+								# so we build a second optimized list
+								if (not redundant):
+									temp_command_list.append(c)
+								else:
+									if self.VERBOSE: print "Command#" + str(i) + " Removed redundant volume write"
+									
+								# replace command list with optimized command list
+								optimized_command_list = temp_command_list
+						
+						else:
+							# process tones, these are a bit more complex, since they might comprise two commands
+							
+							# scan previous commands to see if a tone has been previously set on the same channel
+							# if so, remove the previous one
+							temp_command_list = []
+							redundant_tone_data = False	# set to true if 
+							for c in optimized_command_list:
+								qdata = c["data"]
+								qw = int(binascii.hexlify(qdata), 16)
+
+								redundant = False
+								
+								# if a previous tone command was removed as redundant, any subsequent non-latch tone writes are also redundant
+								if (redundant_tone_data == True):
+									redundant_tone_data = False
+									if (qw & 128) == 0:	# detect non latched data write
+										redundant = True
+								else:
+									# Check if LATCH/DATA write enabled 
+									if qw & 128:
+									
+										# Check if VOLUME flag NOT set (ie. TONE)
+										if (qw & 16) == 0:
+											# Get channel id
+											qchannel = (qw>>5)&3
+											if (qchannel == channel):
+												redundant = True
+												redundant_tone_data = True	# indicate that if next command is a non-latched tone data write, it too is redundant
+								
+								# we cant remove the item directly from quantized_command_list since we are iterating through it
+								# so we build a second optimized list
+								if (not redundant):
+									temp_command_list.append(c)
+								else:
+									if self.VERBOSE: print "Command#" + str(i) + " Removed redundant tone write"
+									
+								# replace command list with optimized command list
+								optimized_command_list = temp_command_list							
+				
+				# add the latest command to the list
+				optimized_command_list.append( { 'command' : command, 'data' : data } )				
+			else:
+				# for all other commands, output any pending optimized_command_list
+				output_command_list += optimized_command_list
+				optimized_command_list = []
+				output_command_list.append( { 'command' : command, 'data' : data } )	
+
+
+		print "- originally contained " + str(num_commands) + " commands, now contains " + str(len(output_command_list)) + " commands"
+
+		# replace internal command list with optimized command list
+		self.command_list = output_command_list
+
+
+		
 	#-------------------------------------------------------------------------------------------------
 	
 	def quantize(self):
@@ -1508,13 +1634,15 @@ output_filename = "test.vgm"
 vgm_stream = VgmStream(filename)
 #print vgm_stream.metadata
 #print vgm_stream.gd3_data
-vgm_stream.filter_channel(0)
-vgm_stream.filter_channel(1)
+#vgm_stream.filter_channel(0)
+#vgm_stream.filter_channel(1)
 #vgm_stream.filter_channel(3)
 
 vgm_stream.set_beeb_mode()
 vgm_stream.set_verbose(True)
+vgm_stream.optimize()
 vgm_stream.retune()
+
 
 #vgm_stream.quantize()
 
