@@ -714,6 +714,7 @@ class VgmStream:
 			# used by the clock retuning code, initialized once at the start of the song, so that latched register states are preserved across the song
 			latched_tone_frequencies = [0, 0, 0, 0]
 			latched_volumes = [0, 0, 0, 0]
+			tone2_offsets = [0, 0]
 			latched_channel = 0		
 
 			# helper function
@@ -735,7 +736,7 @@ class VgmStream:
 					#      -------------                                 ------------------
 					#      ( 2 x N x 16)                                 ( 2 x N x 16 x SR)
 					
-					if self.RETUNE_PERIODIC == True and is_periodic_noise_tone:	
+					if is_periodic_noise_tone:	
 						print "Periodic noise"
 						noise_ratio = (15.0 / 16.0) * (float(self.vgm_source_clock) / float(self.vgm_target_clock))
 						v = float(tone_frequency) / noise_ratio
@@ -767,7 +768,9 @@ class VgmStream:
 				
 		
 			# iterate through write commands looking for tone writes and recalculate their frequencies
-
+			## first create a reference copy of the command list (just for a tuning hack below)
+			#command_list_copy = list(self.command_list)
+			
 			for n in range(len(self.command_list)):
 				command = self.command_list[n]["command"]
 				
@@ -797,7 +800,11 @@ class VgmStream:
 							latched_volumes[latched_channel] = qw & 15		
 						else:
 						
-						
+							# save the index of this tone write if it's channel 2 (used below)
+							if latched_channel == 2:
+								tone2_offsets[0] = n
+								tone2_offsets[1] = -1
+								
 							# get low 4 bits and merge with latched channel's frequency register
 							qfreq = (qw & 0b00001111)
 							latched_tone_frequencies[latched_channel] = (latched_tone_frequencies[latched_channel] & 0b1111110000) | qfreq
@@ -850,25 +857,51 @@ class VgmStream:
 									if (nw & 128) == 0:
 										multi_write = True
 										nfreq = (nw & 0b00111111)
-										latched_tone_frequencies[latched_channel] = (latched_tone_frequencies[latched_channel] & 0b0000001111) | (nfreq << 4)		
+										latched_tone_frequencies[latched_channel] = (latched_tone_frequencies[latched_channel] & 0b0000001111) | (nfreq << 4)	
+
+										# cache offset of the last tone2 channel write
+										if latched_channel == 2:
+											tone2_offsets[1] = nindex										
 									break
 							
 
 								
 							
-							# calculate the correct retuned frequncy for this channel	
-							
-							# to use the periodic noise effect as a bass line, it uses the tone on channel 2 to drive PN frequency on channel 3
-							# when the clock is different, the PN is different, so we have to apply a further correction
-							# typically tracks that use this effect will disable the volume of channel 2
-							# we detect this case and detune channel 2 tone by a further amount to correct for this
-							is_periodic_noise_tone = latched_channel == 2 and latched_volumes[2] == 15 and (latched_tone_frequencies[3] & 3 == 3)
+							# calculate the correct retuned frequncy for this channel						
 
-					
 							# leave channel 3 (noise channel) alone.. it's not a frequency
 							if latched_channel == 3:
-								new_freq = latched_tone_frequencies[latched_channel]
+								new_freq = latched_tone_frequencies[latched_channel]	
+
+								# if we're starting a tuned periodic or white noise, we may need to do further adjustments
+								if (new_freq & 3 == 3) and latched_volumes[2] == 15:
+									print "POTENTIAL RETUNE REQUIRED"
+									# ok this is messy. some tunes setup ch2 tone THEN ch2 vol THEN start the periodic noise, so we have to detect this somehow.
+									# we have to scan backwards to find the last ch2 tone write & correct it
+									# we are at position n in the command list, seek back and find the last tone write to ch2
+									f = recalc_frequency(latched_tone_frequencies[2], True)
+														
+									# write back the previous channel 2 tone command(s) with the corrected frequency
+									zdata = self.command_list[tone2_offsets[0]]["data"]
+									zw = int(binascii.hexlify(zdata), 16)
+									lo_data = (zw & 0b11110000) | (f & 0b00001111)
+									self.command_list[tone2_offsets[0]]["data"] = struct.pack('B', lo_data)
+									
+									# if this was part of a multi-write command (eg. one LATCH/DATA followed by one DATA write)
+									# update the second command too, with the correct frequency
+									if tone2_offsets[1] >= 0:
+										hi_data = (f>>4) & 0b00111111
+										self.command_list[tone2_offsets[1]]["data"] = struct.pack('B', hi_data)											
+									
+									
+
 							else:					
+								# to use the periodic noise effect as a bass line, it uses the tone on channel 2 to drive PN frequency on channel 3
+								# when the clock is different, the PN is different, so we have to apply a further correction
+								# typically tracks that use this effect will disable the volume of channel 2
+								# we detect this case and detune channel 2 tone by a further amount to correct for this
+								is_periodic_noise_tone = self.RETUNE_PERIODIC == True and latched_channel == 2 and latched_volumes[2] == 15 and (latched_tone_frequencies[3] & 3 == 3)
+
 								new_freq = recalc_frequency(latched_tone_frequencies[latched_channel], is_periodic_noise_tone)
 							
 							# write back the command(s) with the correct frequency
@@ -1593,7 +1626,75 @@ class VgmStream:
 		# Also, assume that instruments were used where tone/volume envelopes were used
 		# Capture when tone changes happen, then look for the volume patterns to create instruments
 		# then re-sequence as an instrument/pattern based format	
+
+
+
+	#-------------------------------------------------------------------------------------------------
+	
+	# iterate through the command list, seeing how we might be able to reduce filesize
+	# compression scheme is:
+	# We assume the VGM has been quantized to fixed intervals. Therefore we do not need to emit wait commands, just packets of data writes.
+	# [byte] - indicating number of data writes within the current packet
+	# [dd] ... - data
+	# [byte] - number of data writes within the next packet
+	# [dd] ... - data
+	# ...
+	
+	
+	def test_compress(self):
+		print "   VGM Processing : Test compression "
+		byte_size = 1
+		packet_size = 0
+		
+		data_block = bytearray()
+		packet_block = bytearray()
+		packet_dict = []
+		common_packets = 0
+		packet_count = 0
+		for q in self.command_list:
 			
+			if q["command"] != struct.pack('B', 0x50):
+				data_block.extend(struct.pack('B', len(packet_block)))
+				data_block.extend(packet_block)
+				packet_count += 1
+				
+				new_packet = True
+
+				for i in range(len(packet_dict)):
+					pd = packet_dict[i]
+					if len(pd) != len(packet_block):
+						print "Different size - Adding packet"
+						packet_dict.append(packet_block)
+						break
+					else:
+						print "Found packet with matching size"
+						# same size so compare
+						mp = True
+						for j in range(len(pd)):
+							if pd[j] != packet_block[j]:
+								mp = False
+						if (mp == False):
+							new_packet = False
+							break
+							
+				if new_packet == True:
+					print "Non matching - Adding packet"
+					packet_dict.append(packet_block)
+				else:
+					common_packets += 1
+					print "Found matching packet " + str(len(packet_block)) + " bytes"
+				
+				packet_block = bytearray()
+			else:
+				packet_block.extend(q['data'])
+
+		print "Compressed VGM is " + str(len(data_block)) + " bytes long"
+		print " Found " + str(common_packets) + " common packets out of total " + str(packet_count) + " packets"
+		# write to output file
+		vgm_file = open('xtest.vgb', 'wb')
+		vgm_file.write(data_block)
+		vgm_file.close()		
+		
 #------------------------------------------------------------------------------------------
 # Main
 #------------------------------------------------------------------------------------------
@@ -1616,9 +1717,9 @@ filename = "vgms/ntsc/Chris Kelly - SMS Power 15th Anniversary Competitions - Co
 #filename = "vgms/ntsc/BotB 16439 Chip Champion - frozen dancehall of the pharaoh.vgm" # pathological fail, uses the built-in periodic noises which are tuned differently
 
 #filename = "pn.vgm"
-#filename = "vgms/ntsc/en vard fyra javel.vgm"
-filename = "chris.vgm"
-#filename = "vgms/ntsc/MISSION76496.vgm"
+filename = "vgms/ntsc/en vard fyra javel.vgm"
+#filename = "chris.vgm"
+filename = "vgms/ntsc/MISSION76496.vgm"
 #filename = "vgms/ntsc/fluid.vgm"
 
 output_filename = "test.vgm"
@@ -1633,11 +1734,15 @@ vgm_stream = VgmStream(filename)
 
 vgm_stream.set_beeb_mode()
 vgm_stream.set_verbose(True)
-vgm_stream.optimize()
+
 vgm_stream.retune()
 
 
-#vgm_stream.quantize()
+vgm_stream.quantize()
+vgm_stream.optimize()
+
+vgm_stream.test_compress()
+
 
 #vgm_stream.analyse()
 vgm_stream.write_vgm(output_filename)
