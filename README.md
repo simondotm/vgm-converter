@@ -35,20 +35,28 @@ Supports gzipped VGM or .vgz files.
 
 
 `[-transpose <n>, -t <n>] transpose the source VGM to a new frequency. For <n> Specify 'ntsc' (3.57MHz), 'pal' (4.2MHz) or 'bbc' (4.0MHz)`
+
 `[-quantize <n>, -q <n>] quantize the VGM to a specific playback update interval. For <n> specify an integer Hz value`
+
 `[-filter <n>, -n <n>] strip one or more output channels from the VGM. For <n> specify a string of channels to filter eg. '0123' or '13' etc.`
+
 `[-rawfile <filename>, -r <filename>] output a raw binary file version of the chip data within the source VGM. A default quantization of 60Hz will be applied if not specified with -q`
+
 `[-output <filename>, -o <filename>] specifies the filename to output a processed VGM. Optional.`
+
 `[-dump] output human readable version of the VGM`
+
 `[-verbose] enable debug information`
 
 
 ## Examples
 
 Converting non-BBC Micro SN76489 VGM music to be compatible with a BBC Micro:
+
 `vgmconverter.py myfile.vgm -t bbc -o beebfile.vgm`
 
 Quantizing VGM music to 50Hz fixed playback rate:
+
 `vgmconverter.py beebfile.vgm -q 50 -o beebfile50.vgm`
 
 ## Notes
