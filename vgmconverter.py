@@ -88,7 +88,7 @@ class VgmStream:
 
 	# script vars / configs
 
-	vgm_frequency = 44100
+	VGM_FREQUENCY = 44100
 
 
 	# script options
@@ -301,7 +301,7 @@ class VgmStream:
 		print "      VGM Version : " + "%x" % int(self.metadata['version'])
 		print "VGM SN76489 clock : " + str(float(self.metadata['sn76489_clock'])/1000000) + " MHz"
 		print "         VGM Rate : " + str(float(self.metadata['rate'])) + " Hz"
-		print "      VGM Samples : " + str(int(self.metadata['total_samples'])) + " (" + str(int(self.metadata['total_samples'])/44100) + " seconds)"
+		print "      VGM Samples : " + str(int(self.metadata['total_samples'])) + " (" + str(int(self.metadata['total_samples'])/self.VGM_FREQUENCY) + " seconds)"
 
 
 
@@ -1089,6 +1089,10 @@ class VgmStream:
 				
 		print "   VGM Processing : Quantizing VGM to " + str(play_rate) + " Hz"
 
+		if self.VGM_FREQUENCY % play_rate != 0:
+			print " ERROR - Cannot quantize to a fractional interval, must be an integer factor of 44100"
+			return
+		
 		# total number of commands in the vgm stream
 		num_commands = len(self.command_list)
 
@@ -1098,7 +1102,8 @@ class VgmStream:
 		vgm_time = 0
 		playback_time = 0
 
-
+		interval_time = self.VGM_FREQUENCY/play_rate	
+		
 		vgm_command_index = 0
 
 		unhandled_commands = 0
@@ -1113,7 +1118,7 @@ class VgmStream:
 		while playback_time < total_samples:
 
 			quantized_command_list = []
-			playback_time += self.vgm_frequency/play_rate
+			playback_time += interval_time
 			
 			# if playback time has caught up with vgm_time, process the commands
 			while vgm_time <= playback_time and vgm_command_index < len(self.command_list): 
@@ -1286,13 +1291,25 @@ class VgmStream:
 					# optimization: if quantization time step is 1/50 or 1/60 of a second use the single byte wait
 					if t == 882: # 50Hz
 						if self.VERBOSE: print "Outputting WAIT50"
-						output_command_list.append( { 'command' : b'\x63', 'data' : None } )	
+						output_command_list.append( { 'command' : b'\x63', 'data' : None } )
 					else:
-						if t == 735: # 60Hz
-							output_command_list.append( { 'command' : b'\x62', 'data' : None } )	
+						if t == 882*2: # 25Hz
+							if self.VERBOSE: print "Outputting 2x WAIT50 "
+							output_command_list.append( { 'command' : b'\x63', 'data' : None } )	
+							output_command_list.append( { 'command' : b'\x63', 'data' : None } )	
 						else:
-							# else emit the full 16-bit wait command (3 bytes)
-							output_command_list.append( { 'command' : b'\x61', 'data' : struct.pack('H', t) } )	
+							if t == 735: # 60Hz
+								if self.VERBOSE: print "Outputting WAIT60"
+								output_command_list.append( { 'command' : b'\x62', 'data' : None } )	
+							else:
+								if t == 735*2: # 30Hz
+									if self.VERBOSE: print "Outputting WAIT60 x 2"
+									output_command_list.append( { 'command' : b'\x62', 'data' : None } )	
+									output_command_list.append( { 'command' : b'\x62', 'data' : None } )	
+								else:
+									if self.VERBOSE: print "Outputting WAIT " + str(t) + " (" + str(float(t)/float(interval_time)) + " intervals)"
+									# else emit the full 16-bit wait command (3 bytes)
+									output_command_list.append( { 'command' : b'\x61', 'data' : struct.pack('H', t) } )	
 
 					accumulated_time -= t
 						
@@ -1301,7 +1318,7 @@ class VgmStream:
 
 
 			# accumulate time to next quantized time period
-			next_w = (self.vgm_frequency/play_rate)
+			next_w = (self.VGM_FREQUENCY/play_rate)
 			accumulated_time += next_w
 			if self.VERBOSE: print "next_w=" + str(next_w)
 
@@ -1311,7 +1328,9 @@ class VgmStream:
 		print "- originally contained " + str(num_commands) + " commands, now contains " + str(len(output_command_list)) + " commands"
 
 		self.command_list = output_command_list
-		num_commands = len(output_command_list)		
+		num_commands = len(output_command_list)	
+		self.metadata['rate'] = play_rate
+
 	
 
 	#-------------------------------------------------------------------------------------------------
@@ -1505,7 +1524,7 @@ class VgmStream:
 					waittime += t
 					if t < minwait:
 						minwait = t
-					ms = t * 1000 / 44100
+					ms = t * 1000 / self.VGM_FREQUENCY
 					pdata = str(ms) +"ms, " + str(t) + " samples (" + pdata +")"
 					if t not in waitdictionary:
 						waitdictionary.append(t)					
@@ -1519,7 +1538,7 @@ class VgmStream:
 					waittime += t
 					if t < minwaitn:
 						minwaitn = t
-					ms = t * 1000 / 44100
+					ms = t * 1000 / self.VGM_FREQUENCY
 					pdata = str(ms) +"ms, " + str(t) + " samples (" + pdata +")"
 					if t not in waitdictionary:
 						waitdictionary.append(t)
@@ -1542,7 +1561,7 @@ class VgmStream:
 
 		totalwaitcommands = num_commands - totalwritecount
 		clockspeed = 2000000
-		samplerate = 44100
+		samplerate = self.VGM_FREQUENCY
 		cyclespersample = clockspeed/samplerate
 
 
@@ -1606,7 +1625,7 @@ class VgmStream:
 
 
 		print "Number of commands in data file: " + str(num_commands)
-		print "Total samples in data file: " + str(total_samples) + " (" + str(total_samples*1000/44100) + " ms)"
+		print "Total samples in data file: " + str(total_samples) + " (" + str(total_samples*1000/self.VGM_FREQUENCY) + " ms)"
 		print "Smallest wait time was: " + str(minwait) + " samples"
 		print "Smallest waitN time was: " + str(minwaitn) + " samples"
 		print "ClockSpeed:" + str(clockspeed) + " SampleRate:" + str(samplerate) + " CyclesPerSample:" + str(cyclespersample) + " CyclesPerWrite:" + str(cyclespersample*minwait)
@@ -1668,8 +1687,9 @@ class VgmStream:
 	#-------------------------------------------------------------------------------------------------
 	
 	# iterate through the command list, seeing how we might be able to reduce filesize
-	# compression scheme is:
+	# binary format schema is:
 	# We assume the VGM has been quantized to fixed intervals. Therefore we do not need to emit wait commands, just packets of data writes.
+	# [header byte] - indicates the required playback rate in Hz
 	# [byte] - indicating number of data writes within the current packet (max 11)
 	# [dd] ... - data
 	# [byte] - number of data writes within the next packet
@@ -1678,56 +1698,99 @@ class VgmStream:
 	# [0xff] - eof
 	# Max packet length will be 11 bytes as that is all that is needed to update all SN tone + volume registers for all 4 channels in one interval.
 	
-	def test_compress(self, filename):
-		print "   VGM Processing : Test compression "
+	def write_binary(self, filename):
+		print "   VGM Processing : Output binary file "
 		byte_size = 1
 		packet_size = 0
-		
+		play_rate = self.metadata['rate']
+		play_interval = self.VGM_FREQUENCY / play_rate
 		data_block = bytearray()
 		packet_block = bytearray()
 
 		packet_dict = []
 		common_packets = 0
 		packet_count = 0
+		
+		# emit the play rate
+		data_block.append(struct.pack('B', play_rate))
+		# emit the packet data
 		for q in self.command_list:
 			
-			if q["command"] != struct.pack('B', 0x50):
-				print "Command " + str(binascii.hexlify(q["command"]))
-				print "len " + str(len(packet_block))
+			command = q["command"]
+			if command != struct.pack('B', 0x50):
+			
+				# non-write command, so flush any pending packet data
+				if self.VERBOSE: print "Packet length " + str(len(packet_block))
 
 				data_block.append(struct.pack('B', len(packet_block)))
 				data_block.extend(packet_block)
 				packet_count += 1
 				
-				new_packet = True
+				# build up a dictionary of packets - curious to see how much repetition exists
+				if True:
+					new_packet = True
 
-				for i in range(len(packet_dict)):
-					pd = packet_dict[i]
-					if len(pd) != len(packet_block):
-						#print "Different size - Adding packet"
-						packet_dict.append(packet_block)
-						break
-					else:
-						#print "Found packet with matching size"
-						# same size so compare
-						mp = True
-						for j in range(len(pd)):
-							if pd[j] != packet_block[j]:
-								mp = False
-						if (mp == False):
-							new_packet = False
+					for i in range(len(packet_dict)):
+						pd = packet_dict[i]
+						if len(pd) != len(packet_block):
+							#print "Different size - Adding packet"
+							packet_dict.append(packet_block)
 							break
-							
-				if new_packet == True:
-					#print "Non matching - Adding packet"
-					packet_dict.append(packet_block)
-				else:
-					common_packets += 1
-					#print "Found matching packet " + str(len(packet_block)) + " bytes"
+						else:
+							#print "Found packet with matching size"
+							# same size so compare
+							mp = True
+							for j in range(len(pd)):
+								if pd[j] != packet_block[j]:
+									mp = False
+							if (mp == False):
+								new_packet = False
+								break
+								
+					if new_packet == True:
+						#print "Non matching - Adding packet"
+						packet_dict.append(packet_block)
+					else:
+						common_packets += 1
+						#print "Found matching packet " + str(len(packet_block)) + " bytes"
 				
+				# start new packet
 				packet_block = bytearray()
+				
+				if self.VERBOSE: print "Command " + str(binascii.hexlify(command))
+				
+				
+
+				# see if command is a wait longer than one interval and emit empty packets to compensate
+				wait = 0
+				if command == struct.pack('B', 0x61):
+					t = int(binascii.hexlify(q["data"]), 16)
+					wait = ((t & 255) * 256) + (t>>8)
+				else:
+					if command == struct.pack('B', 0x62):
+						wait = 735
+					else:
+						if command == struct.pack('B', 0x63):
+							wait = 	882
+					
+				if wait != 0:	
+					intervals = wait / (self.VGM_FREQUENCY / play_rate)
+					if intervals == 0:
+						print "ERROR in data stream, wait value was not divisible by play_rate, bailing"
+						return
+					else:
+						if self.VERBOSE: print "WAIT " + str(intervals) + " intervals"
+						
+					# emit empty packet headers to simulate wait commands
+					intervals -= 1
+					while intervals > 0:
+						data_block.append(0)
+						if self.VERBOSE: print "Packet length 0"
+						intervals -= 1
+				
+				
 			else:
-				print "Data " + str(binascii.hexlify(q["command"]))			
+				if self.VERBOSE: print "Data " + str(binascii.hexlify(command))			
 				packet_block.extend(q['data'])
 
 		# eof
@@ -1938,7 +2001,7 @@ if option_quantize != None:
 
 # emit a raw binary file if required
 if option_rawfile != None:
-	vgm_stream.test_compress(option_rawfile)
+	vgm_stream.write_binary(option_rawfile)
 
 # write out the processed VGM if required
 if option_outputfile != None:

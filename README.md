@@ -1,5 +1,5 @@
 # vgm-converter
-Script for processing SN76489 PSG based VGM files 
+Python script for processing SN76489 PSG based VGM files 
 
 ## Functionality
 VGM files containing data streams for the SN76489 PSG are encoded for a particular clock speed.
@@ -92,6 +92,7 @@ All of the above:
 Intended as a compact data format of the VGM for memory-constrained 8-bit platforms, the binary format is structured as follows:
 
 * SN76489 sound chip data is organised into a stream of packets - 1 packet per playback interval (50Hz = 20ms etc.)
+* 1 byte header containing playback interval in Hz (eg. 50/60/100). This is followed by the packet data.
 * Each packet contains a header byte followed by upto 11 bytes of sound chip data
 * The header byte indicates how many data bytes are in the packet, or 0 if no data needs to be sent to the sound chip for this interval.
 * This is then repeated for the duration of the song
