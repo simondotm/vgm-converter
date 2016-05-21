@@ -86,3 +86,17 @@ All of the above:
 * Processing is applied in a fixed order regardless of the command line order.
 * Wildcard filenames are not yet supported
 * -dump and -rawfile options are still a work in progress.
+
+### Raw data file format
+
+Intended as a compact data format of the VGM for memory-constrained 8-bit platforms, the binary format is structured as follows:
+
+* SN76489 sound chip data is organised into a stream of packets - 1 packet per playback interval (50Hz = 20ms etc.)
+* Each packet contains a header byte followed by upto 11 bytes of sound chip data
+* The header byte indicates how many data bytes are in the packet, or 0 if no data needs to be sent to the sound chip for this interval.
+* This is then repeated for the duration of the song
+* The file ends with 0xFF
+
+There is no support for looping in this format (yet).
+
+
