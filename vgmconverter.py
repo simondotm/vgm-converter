@@ -1,4 +1,15 @@
-# python script to convert PSG VGM files to compact resampled BBC Micro files
+#!/usr/bin/env python
+# python script to convert & process VGM files for SN76489 PSG
+# by scrubbly 2016
+# Released under MIT license
+# 
+# VGM files can be loaded, filtered, transposed for different clock speeds, and quantized to fixed playback rates (lossy)
+#
+# Created primarily to enable porting of NTSC or PAL versions of SN76489 chip tunes to the BBC Micro, but is generally useful for other platforms.
+#
+# Based on https://github.com/cdodd/vgmparse
+#
+# Useful VGM/SN76489 References & Resources:
 # http://www.smspower.org/Development/SN76489
 # http://vgmrips.net/wiki/VGM_Specification
 # http://vgmrips.net/packs/pack/svc-motm
@@ -16,6 +27,7 @@ import struct
 import sys
 import binascii
 import math
+
 
 if (sys.version_info > (3, 0)):
 	from io import BytesIO as ByteBuffer
@@ -77,18 +89,18 @@ class VgmStream:
 	# script vars / configs
 
 	vgm_frequency = 44100
-	play_frequency = 50 #50 # resample to N hz
+
 
 	# script options
-	OPTIMIZE_COMMANDS = True # if true will optimize any redundant register writes that occur when the song is quantized
-	RETUNE_PERIODIC = True	# if true will attempt to retune any use of the periodic noise effect
+	OPTIMIZE_COMMANDS = False # [LEGACY] if true will optimize any redundant register writes that occur when the song is quantized
+	RETUNE_PERIODIC = True	# [TO BE REMOVED] if true will attempt to retune any use of the periodic noise effect
 	VERBOSE = False
 	STRIP_GD3 = False	
 	
 	# VGM file identifier
 	vgm_magic_number = b'Vgm '
 
-	disable_dual_chip = True
+	disable_dual_chip = True # [TODO] handle dual PSG a bit better
 
 	vgm_source_clock = 0
 	vgm_target_clock = 0
@@ -638,14 +650,30 @@ class VgmStream:
 		print "   VGM Processing : Written " + str(int(len(vgm_data))) + " bytes, GD3 tag used " + str(gd3_stream_length) + " bytes"
 		
 		print "All done."
-		
+
 	#-------------------------------------------------------------------------------------------------
-	def set_beeb_mode(self):
-		# force beeb mode
-		self.metadata['sn76489_feedback'] = 0x0003	# 0x0006 for	SN76494, SN76496
-		self.metadata['sn76489_clock'] = 0x003d0900	# 4Mhz on Beeb, usually 3.579545MHz (NTSC) for Sega-based PSG tunes
-		self.metadata['sn76489_shift_register_width'] = 15	# 16 for Sega	
-		self.vgm_target_clock = self.metadata['sn76489_clock']
+			
+	# clock_type can be NTSC, PAL or BBC (case insensitive)
+	def set_target_clock(self, clock_type):
+		if clock_type.lower() == 'ntsc':
+			self.metadata['sn76489_feedback'] = 0x0006	# 0x0006 for	SN76494, SN76496
+			self.metadata['sn76489_clock'] = 3579545	# usually 3.579545 MHz (NTSC) for Sega-based PSG tunes
+			self.metadata['sn76489_shift_register_width'] = 16	# 	
+			self.vgm_target_clock = self.metadata['sn76489_clock']	
+		else:
+			if clock_type.lower() == 'pal':
+				self.metadata['sn76489_feedback'] = 0x0006	# 0x0006 for	SN76494, SN76496
+				self.metadata['sn76489_clock'] = 4433619	# 4.43361875 Mz for PAL
+				self.metadata['sn76489_shift_register_width'] = 16	# 	
+				self.vgm_target_clock = self.metadata['sn76489_clock']	
+			else:
+				if clock_type.lower() == 'bbc':
+					self.metadata['sn76489_feedback'] = 0x0003	# 0x0003 for BBC configuration of SN76489
+					self.metadata['sn76489_clock'] = 4000000	# 4.0 Mhz on Beeb, 
+					self.metadata['sn76489_shift_register_width'] = 15	# BBC taps bit 15 on the SR	
+					self.vgm_target_clock = self.metadata['sn76489_clock']			
+	
+
 
 	#-------------------------------------------------------------------------------------------------
 	def set_verbose(self, verbose):
@@ -697,7 +725,13 @@ class VgmStream:
 	
 	#-------------------------------------------------------------------------------------------------
 	
-	def retune(self):
+	# Process the tone frequencies in the VGM for the given clock_type ('ntsc', 'pal' or 'bbc')
+	# such that the output VGM plays at the same pitch as the original, but using the target clock speeds.
+	# Tuned periodic and white noise are also transposed.
+	def transpose(self, clock_type):
+		
+		# setup the correct target chip parameters
+		self.set_target_clock(clock_type)
 		
 		# total number of commands in the vgm stream
 		num_commands = len(self.command_list)
@@ -737,7 +771,7 @@ class VgmStream:
 					#      ( 2 x N x 16)                                 ( 2 x N x 16 x SR)
 					
 					if is_periodic_noise_tone:	
-						print "Periodic noise"
+						#print "Periodic noise"
 						noise_ratio = (15.0 / 16.0) * (float(self.vgm_source_clock) / float(self.vgm_target_clock))
 						v = float(tone_frequency) / noise_ratio
 						if self.VERBOSE: print "noise_ratio=" + str(noise_ratio)
@@ -745,7 +779,7 @@ class VgmStream:
 						if self.VERBOSE: print "retuned periodic noise effect on channel 2"										
 
 					else:
-						print "Tone"				
+						#print "Tone"				
 						# compute corrected tone register value for generating the same frequency using the target chip's clock rate
 						hz = float(self.vgm_source_clock) / ( 2.0 * float(tone_frequency) * 16.0)
 						if self.VERBOSE: print "hz=" + str(hz)
@@ -875,13 +909,15 @@ class VgmStream:
 
 								# if we're starting a tuned periodic or white noise, we may need to do further adjustments
 								if (new_freq & 3 == 3) and latched_volumes[2] == 15:
-									print "POTENTIAL RETUNE REQUIRED"
-									# ok this is messy. some tunes setup ch2 tone THEN ch2 vol THEN start the periodic noise, so we have to detect this somehow.
-									# we have to scan backwards to find the last ch2 tone write & correct it
-									# we are at position n in the command list, seek back and find the last tone write to ch2
+									#print "POTENTIAL RETUNE REQUIRED"
+									# ok we've detected a tuned noise on ch3, which is slightly more involved to correct. 
+									# some tunes setup ch2 tone THEN ch2 vol THEN start the periodic noise, so we have to detect this case.
+									# we record the index in the command stream of when tone on ch2 was last set
+									# then we refern backwards to find that ch2 tone write & correct it
+									# the current latched_tone_frequency is captured though, so transpose that as usual
 									f = recalc_frequency(latched_tone_frequencies[2], True)
 														
-									# write back the previous channel 2 tone command(s) with the corrected frequency
+									# now write back to the previous channel 2 tone command(s) with the newly corrected frequency
 									zdata = self.command_list[tone2_offsets[0]]["data"]
 									zw = int(binascii.hexlify(zdata), 16)
 									lo_data = (zw & 0b11110000) | (f & 0b00001111)
@@ -919,7 +955,7 @@ class VgmStream:
 
 							if self.VERBOSE: print "new_freq=" + format(new_freq, 'x') + ", lo_data=" + format(lo_data, '02x') + ", hi_data=" + format(hi_data, '02x')
 		else:
-			print "retune() - No retuning necessary as target clock matches source clock"
+			print "transpose() - No transposing necessary as target clock matches source clock"
 			
 	#-------------------------------------------------------------------------------------------------
 	# iterate through the command list, removing anything we consider to be "redundant" (ie. multiple writes to the same register within a single wait period)
@@ -1049,9 +1085,9 @@ class VgmStream:
 		
 	#-------------------------------------------------------------------------------------------------
 	
-	def quantize(self):
+	def quantize(self, play_rate):
 				
-		print "   VGM Processing : Quantizing VGM to " + str(self.play_frequency) + " Hz"
+		print "   VGM Processing : Quantizing VGM to " + str(play_rate) + " Hz"
 
 		# total number of commands in the vgm stream
 		num_commands = len(self.command_list)
@@ -1077,7 +1113,7 @@ class VgmStream:
 		while playback_time < total_samples:
 
 			quantized_command_list = []
-			playback_time += self.vgm_frequency/self.play_frequency
+			playback_time += self.vgm_frequency/play_rate
 			
 			# if playback time has caught up with vgm_time, process the commands
 			while vgm_time <= playback_time and vgm_command_index < len(self.command_list): 
@@ -1265,13 +1301,13 @@ class VgmStream:
 
 
 			# accumulate time to next quantized time period
-			next_w = (self.vgm_frequency/self.play_frequency)
+			next_w = (self.vgm_frequency/play_rate)
 			accumulated_time += next_w
 			if self.VERBOSE: print "next_w=" + str(next_w)
 
 
 		# report
-		print "Processed VGM stream, resampled to " + str(self.play_frequency) + "Hz" 
+		print "Processed VGM stream, quantized to " + str(play_rate) + "Hz playback intervals" 
 		print "- originally contained " + str(num_commands) + " commands, now contains " + str(len(output_command_list)) + " commands"
 
 		self.command_list = output_command_list
@@ -1634,12 +1670,13 @@ class VgmStream:
 	# iterate through the command list, seeing how we might be able to reduce filesize
 	# compression scheme is:
 	# We assume the VGM has been quantized to fixed intervals. Therefore we do not need to emit wait commands, just packets of data writes.
-	# [byte] - indicating number of data writes within the current packet
+	# [byte] - indicating number of data writes within the current packet (max 11)
 	# [dd] ... - data
 	# [byte] - number of data writes within the next packet
 	# [dd] ... - data
 	# ...
-	
+	# [0xff] - eof
+	# Max packet length will be 11 bytes as that is all that is needed to update all SN tone + volume registers for all 4 channels in one interval.
 	
 	def test_compress(self):
 		print "   VGM Processing : Test compression "
@@ -1648,13 +1685,17 @@ class VgmStream:
 		
 		data_block = bytearray()
 		packet_block = bytearray()
+
 		packet_dict = []
 		common_packets = 0
 		packet_count = 0
 		for q in self.command_list:
 			
 			if q["command"] != struct.pack('B', 0x50):
-				data_block.extend(struct.pack('B', len(packet_block)))
+				print "Command " + str(binascii.hexlify(q["command"]))
+				print "len " + str(len(packet_block))
+
+				data_block.append(struct.pack('B', len(packet_block)))
 				data_block.extend(packet_block)
 				packet_count += 1
 				
@@ -1663,11 +1704,11 @@ class VgmStream:
 				for i in range(len(packet_dict)):
 					pd = packet_dict[i]
 					if len(pd) != len(packet_block):
-						print "Different size - Adding packet"
+						#print "Different size - Adding packet"
 						packet_dict.append(packet_block)
 						break
 					else:
-						print "Found packet with matching size"
+						#print "Found packet with matching size"
 						# same size so compare
 						mp = True
 						for j in range(len(pd)):
@@ -1678,74 +1719,237 @@ class VgmStream:
 							break
 							
 				if new_packet == True:
-					print "Non matching - Adding packet"
+					#print "Non matching - Adding packet"
 					packet_dict.append(packet_block)
 				else:
 					common_packets += 1
-					print "Found matching packet " + str(len(packet_block)) + " bytes"
+					#print "Found matching packet " + str(len(packet_block)) + " bytes"
 				
 				packet_block = bytearray()
 			else:
+				print "Data " + str(binascii.hexlify(q["command"]))			
 				packet_block.extend(q['data'])
 
+		# eof
+		data_block.append(0xFF)
+		
 		print "Compressed VGM is " + str(len(data_block)) + " bytes long"
 		print " Found " + str(common_packets) + " common packets out of total " + str(packet_count) + " packets"
 		# write to output file
-		vgm_file = open('xtest.vgb', 'wb')
-		vgm_file.write(data_block)
-		vgm_file.close()		
+		bin_file = open('xtest.vgb', 'wb')
+		bin_file.write(data_block)
+		bin_file.close()		
 		
 #------------------------------------------------------------------------------------------
 # Main
 #------------------------------------------------------------------------------------------
 
+# for testing
+my_command_line = None
+if False:
+	filename = "vgms/sms/10 Page 4.vgm"
+	filename = "vgms/sms/18 - 14 Dan's Theme.vgm"
+	filename = "vgms/bbc/Galaforce2-title.vgm"
+	filename = "vgms/bbc/Firetrack-ingame.vgm"
+	filename = "vgms/bbc/CodenameDroid-title.vgm"
+	filename = "vgms/sms/07 - 07 COOL JAM.vgm"
+	filename = "vgms/sms/09 - 13 Ken's Theme.vgm"
+	filename = "vgms/ntsc/15 Diamond Maze.vgm"
+	filename = "vgms/ntsc/01 Game Start.vgm"
 
 
-filename = "vgms/sms/10 Page 4.vgm"
-filename = "vgms/sms/18 - 14 Dan's Theme.vgm"
-filename = "vgms/bbc/Galaforce2-title.vgm"
-filename = "vgms/bbc/Firetrack-ingame.vgm"
-filename = "vgms/bbc/CodenameDroid-title.vgm"
-filename = "vgms/sms/07 - 07 COOL JAM.vgm"
-filename = "vgms/sms/09 - 13 Ken's Theme.vgm"
-filename = "vgms/ntsc/15 Diamond Maze.vgm"
-filename = "vgms/ntsc/01 Game Start.vgm"
+	#filename = "vgms/ntsc/ne7-magic_beansmaster_system_psg.vgm"
+	filename = "vgms/ntsc/Chris Kelly - SMS Power 15th Anniversary Competitions - Collision Chaos.vgz"
+	#filename = "vgms/ntsc/BotB 16439 Chip Champion - frozen dancehall of the pharaoh.vgm" # pathological fail, uses the built-in periodic noises which are tuned differently
+
+	#filename = "pn.vgm"
+	#filename = "vgms/ntsc/en vard fyra javel.vgm"
+	#filename = "chris.vgm"
+	filename = "vgms/ntsc/MISSION76496.vgm"
+	#filename = "vgms/ntsc/fluid.vgm"
+	#filename = "ng.vgm"
+
+	# for testing...
+	my_command_line = 'vgmconverter "' + filename + '" -t bbc -q 50 -o "test.vgm"'
 
 
-#filename = "vgms/ntsc/ne7-magic_beansmaster_system_psg.vgm"
-filename = "vgms/ntsc/Chris Kelly - SMS Power 15th Anniversary Competitions - Collision Chaos.vgz"
-#filename = "vgms/ntsc/BotB 16439 Chip Champion - frozen dancehall of the pharaoh.vgm" # pathological fail, uses the built-in periodic noises which are tuned differently
-
-#filename = "pn.vgm"
-filename = "vgms/ntsc/en vard fyra javel.vgm"
-#filename = "chris.vgm"
-filename = "vgms/ntsc/MISSION76496.vgm"
-#filename = "vgms/ntsc/fluid.vgm"
-
-output_filename = "test.vgm"
-
-# process the VGM
-vgm_stream = VgmStream(filename)
-#print vgm_stream.metadata
-#print vgm_stream.gd3_data
-#vgm_stream.filter_channel(0)
-#vgm_stream.filter_channel(1)
-#vgm_stream.filter_channel(3)
-
-vgm_stream.set_beeb_mode()
-vgm_stream.set_verbose(True)
-
-vgm_stream.retune()
 
 
-vgm_stream.quantize()
-vgm_stream.optimize()
+#------------------------------------------------------------------------------------------
 
-vgm_stream.test_compress()
+if my_command_line != None:
+	argv = my_command_line.split()
+else:
+	argv = sys.argv
+
+argc = len(argv)
+
+if argc < 2:
+	print "VGM Conversion Utility for VGM files based on TI SN76849 sound chips"
+	print " Supports gzipped VGM or .vgz files."
+	print ""
+	print " Usage:"
+	print "  vgmconverter <vgmfile> [-transpose <n>] [-quantize <n>] [-filter <n>] [-rawfile <filename>] [-output <filename>] [-dump] [-verbose]"
+	print ""
+	print "   where:"
+	print "    <vgmfile> is the source VGM file to be processed. Wildcards are not yet supported."
+	print ""
+	print "   options:"
+	print "    [-transpose <n>, -t <n>] transpose the source VGM to a new frequency. For <n> Specify 'ntsc' (3.57MHz), 'pal' (4.2MHz) or 'bbc' (4.0MHz)"
+	print "    [-quantize <n>, -q <n>] quantize the VGM to a specific playback update interval. For <n> specify an integer Hz value"
+	print "    [-filter <n>, -n <n>] strip one or more output channels from the VGM. For <n> specify a string of channels to filter eg. '0123' or '13' etc."
+	print "    [-rawfile <filename>, -r <filename>] output a raw binary file version of the chip data within the source VGM. A default quantization of 60Hz will be applied if not specified with -q"
+	print "    [-output <filename>, -o <filename>] specifies the filename to output a processed VGM. Optional."
+	print "    [-dump] output human readable version of the VGM"
+	print "    [-verbose] enable debug information"
+	exit()
+
+# pre-process argv to merge quoted arguments
+argi = 0
+inquotes = False
+outargv = []
+quotedarg = []
+#print argv
+for s in argv:
+	#print "s=" + s
+	#print "quotedarg=" + str(quotedarg)
+	
+	if s.startswith('"') and s.endswith('"'):
+		outargv.append(s[1:-1])	
+		continue
+	
+	if not inquotes and s.startswith('"'):
+		inquotes = True
+		quotedarg.append(s[1:] + ' ')
+		continue
+	
+	if inquotes and s.endswith('"'):
+		inquotes = False
+		quotedarg.append(s[:-1])
+		outargv.append("".join(quotedarg))
+		quotedarg = []
+		continue
+		
+	if inquotes:
+		quotedarg.append(s + ' ')	
+		continue
+		
+	outargv.append(s)
+
+if inquotes:
+	print "Error parsing command line " + str(" ".join(argv))
+	exit()
+
+argv = outargv
+	
+# validate source file	
+source_filename = None
+if argv[1][0] != '-':
+	source_filename = argv[1]
+
+# setup option defaults
+option_verbose = None
+option_outputfile = None
+option_transpose = None
+option_quantize = None
+option_filter = None
+option_rawfile = None
+option_dump = None
 
 
-#vgm_stream.analyse()
-vgm_stream.write_vgm(output_filename)
+# process command line
+for i in range(2, len(argv)):
+	arg = argv[i]
+	if arg[0] == '-':
+		option = arg[1:].lower()
+		if option == 'o' or option == 'output':
+			option_outputfile = argv[i+1]
+		else:
+			if option == 't' or option == 'transpose':
+				option_transpose = argv[i+1]
+			else:
+				if option == 'q' or option == 'quantize':
+					option_quantize = argv[i+1]
+				else:
+					if option == 'f' or option == 'filter':
+						option_filter = argv[i+1]
+					else:
+						if option == 'r' or option == 'rawfile':
+							option_rawfile = argv[i+1]
+						else:
+							if option == 'd' or option == 'dump':
+								option_dump = True
+							else:
+								if option == 'v' or option == 'verbose':
+									option_verbose = True
+								else:
+									print "ERROR: Unrecognised option '" + arg + "'"
 
+# load the VGM
+if source_filename == None:
+	print "ERROR: No source <filename> provided."
+	exit()
+
+# if rawfile output is specified, but no quantization option given, force a default quantization of 60Hz (NTSC)
+if option_rawfile != None:
+	if option_quantize == None:
+		option_quantize = 'ntsc'
+	
+# debug code	
+if False:
+	print "source " + str(source_filename)
+	print "verbose " + str(option_verbose)
+	print "output " + str(option_outputfile)
+	print "transpose " + str(option_transpose)
+	print "quantize " + str(option_quantize)
+	print "filter " + str(option_filter)
+	print "rawfile " + str(option_rawfile)
+	print "dump " + str(option_dump)
+	print ""
+
+
+	
+vgm_stream = VgmStream(source_filename)
+
+# turn on verbose mode if required
+if option_verbose == True:
+	vgm_stream.set_verbose(True)
+	
+# apply channel filters
+if option_filter != None:
+	if option_filter.find('0') != -1:
+		vgm_stream.filter_channel(0)
+	if option_filter.find('1') != -1:
+		vgm_stream.filter_channel(1)
+	if option_filter.find('2') != -1:
+		vgm_stream.filter_channel(2)
+	if option_filter.find('3') != -1:
+		vgm_stream.filter_channel(3)
+
+# apply transpose
+if option_transpose != None:
+	vgm_stream.transpose(option_transpose)
+
+# quantize the VGM if required
+if option_quantize != None:
+	hz = int(option_quantize)
+	vgm_stream.quantize(hz)
+	vgm_stream.optimize()
+
+# emit a raw binary file if required
+if option_rawfile != None:
+	vgm_stream.test_compress(option_rawfile)
+
+# write out the processed VGM if required
+if option_outputfile != None:
+	vgm_stream.write_vgm(option_outputfile)
+
+# dump the processed VGM
+if option_dump != None:
+	vgm_stream.analyse()
+
+# all done
+print ""
+print "Processing complete."
 
 
