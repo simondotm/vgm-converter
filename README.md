@@ -36,7 +36,7 @@ Supports gzipped VGM or .vgz files.
 
 `[-transpose <n>, -t <n>]`
 
-Transpose the source VGM to a new frequency. For <n> Specify 'ntsc' (3.57MHz), 'pal' (4.2MHz) or 'bbc' (4.0MHz)
+Transpose the source VGM to a new frequency. Specify 'ntsc' (3.57MHz), 'pal' (4.2MHz) or 'bbc' (4.0MHz)
 
 `[-quantize <n>, -q <n>]`
 
