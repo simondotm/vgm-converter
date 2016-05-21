@@ -34,19 +34,33 @@ Supports gzipped VGM or .vgz files.
 ### Options
 
 
-`[-transpose <n>, -t <n>] transpose the source VGM to a new frequency. For <n> Specify 'ntsc' (3.57MHz), 'pal' (4.2MHz) or 'bbc' (4.0MHz)`
+`[-transpose <n>, -t <n>]`
 
-`[-quantize <n>, -q <n>] quantize the VGM to a specific playback update interval. For <n> specify an integer Hz value`
+Transpose the source VGM to a new frequency. For <n> Specify 'ntsc' (3.57MHz), 'pal' (4.2MHz) or 'bbc' (4.0MHz)
 
-`[-filter <n>, -n <n>] strip one or more output channels from the VGM. For <n> specify a string of channels to filter eg. '0123' or '13' etc.`
+`[-quantize <n>, -q <n>]`
 
-`[-rawfile <filename>, -r <filename>] output a raw binary file version of the chip data within the source VGM. A default quantization of 60Hz will be applied if not specified with -q`
+Quantize the VGM to a specific playback update interval. For <n> specify an integer Hz value
 
-`[-output <filename>, -o <filename>] specifies the filename to output a processed VGM. Optional.`
+`[-filter <n>, -n <n>] `
 
-`[-dump] output human readable version of the VGM`
+Strip one or more output channels from the VGM. For <n> specify a string of channels to filter eg. '0123' or '13' etc.
 
-`[-verbose] enable debug information`
+`[-rawfile <filename>, -r <filename>] `
+
+Output a raw binary file version of the chip data within the source VGM. A default quantization of 60Hz will be applied if not specified with -q
+
+`[-output <filename>, -o <filename>] `
+
+Specifies the output filename for the processed VGM. It is optional as sometimes it's useful to process a VGM file only for informational purposes.
+
+`[-dump] `
+
+Output human readable version of the VGM
+
+`[-verbose] `
+
+Emit debug information
 
 
 ## Examples
