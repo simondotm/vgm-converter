@@ -34,17 +34,17 @@ Supports gzipped VGM or .vgz files.
 ### Options
 
 
-`[-transpose <n>, -t <n>]`
+`[-transpose <clocktype>, -t <clocktype>]`
 
-Transpose the source VGM to a new frequency. Specify 'ntsc' (3.57MHz), 'pal' (4.2MHz) or 'bbc' (4.0MHz)
+Transpose the source VGM to a new frequency. For clocktype, specify 'ntsc' (3.57MHz), 'pal' (4.2MHz) or 'bbc' (4.0MHz)
 
 `[-quantize <n>, -q <n>]`
 
-Quantize the VGM to a specific playback update interval. For <n> specify an integer Hz value
+Quantize the VGM to a specific playback update interval. For n, specify an integer Hz value
 
 `[-filter <n>, -n <n>] `
 
-Strip one or more output channels from the VGM. For <n> specify a string of channels to filter eg. '0123' or '13' etc.
+Strip one or more output channels from the VGM. For n, specify a string of channels to filter eg. '0123' or '13' etc.
 
 `[-rawfile <filename>, -r <filename>] `
 
@@ -54,11 +54,11 @@ Output a raw binary file version of the chip data within the source VGM. A defau
 
 Specifies the output filename for the processed VGM. It is optional as sometimes it's useful to process a VGM file only for informational purposes.
 
-`[-dump] `
+`[-dump, -d] `
 
 Output human readable version of the VGM
 
-`[-verbose] `
+`[-verbose, -v] `
 
 Emit debug information
 
@@ -87,7 +87,7 @@ All of the above:
 * Wildcard filenames are not yet supported
 * -dump and -rawfile options are still a work in progress.
 
-### Raw data file format
+## Raw data file format
 
 Intended as a compact data format of the VGM for memory-constrained 8-bit platforms, the binary format is structured as follows:
 
