@@ -73,6 +73,16 @@ Quantizing VGM music to 50Hz fixed playback rate:
 
 `vgmconverter.py beebfile.vgm -q 50 -o beebfile50.vgm`
 
+Transpose and quantize a VGM, outputting a raw binary file containing pure sound chip data streams:
+
+`vgmconverter.py myfile.vgm -q 50 -t bbc -r beebfile.bin`
+
+All of the above:
+
+`vgmconverter.py myfile.vgm -q 50 -t bbc -o beebfile50.vgm -r beebfile.bin`
+
 ## Notes
 
--dump and -rawfile options are still a work in progress.
+* Processing is applied in a fixed order regardless of the command line order.
+* Wildcard filenames are not yet supported
+* -dump and -rawfile options are still a work in progress.
