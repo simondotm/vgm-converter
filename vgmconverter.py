@@ -1678,7 +1678,7 @@ class VgmStream:
 	# [0xff] - eof
 	# Max packet length will be 11 bytes as that is all that is needed to update all SN tone + volume registers for all 4 channels in one interval.
 	
-	def test_compress(self):
+	def test_compress(self, filename):
 		print "   VGM Processing : Test compression "
 		byte_size = 1
 		packet_size = 0
@@ -1736,7 +1736,7 @@ class VgmStream:
 		print "Compressed VGM is " + str(len(data_block)) + " bytes long"
 		print " Found " + str(common_packets) + " common packets out of total " + str(packet_count) + " packets"
 		# write to output file
-		bin_file = open('xtest.vgb', 'wb')
+		bin_file = open(filename, 'wb')
 		bin_file.write(data_block)
 		bin_file.close()		
 		
