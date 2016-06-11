@@ -1516,12 +1516,17 @@ class VgmStream:
 				# flush any pending wait commands before data writes, to optimize redundant wait commands
 
 				if self.VERBOSE: print "Flushing " + str(len(quantized_command_list)) + " commands, accumulated_time=" + str(accumulated_time)
+				
+				# make sure we limit the max time delay to be the nearest value under 65535
+				# that is wholly divisible by the quantization interval
+				max_accumulated_time = 65535 / (self.VGM_FREQUENCY/play_rate)
+				max_accumulated_time = max_accumulated_time * (self.VGM_FREQUENCY/play_rate)
 				while (accumulated_time > 0):
 					
 					# ensure no wait commands exceed the 16-bit limit
 					t = accumulated_time
-					if (t > 65535):
-						t = 65535
+					if (t > max_accumulated_time):
+						t = max_accumulated_time
 					
 					# optimization: if quantization time step is 1/50 or 1/60 of a second use the single byte wait
 					if t == 882: # 50Hz
