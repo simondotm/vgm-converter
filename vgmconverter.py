@@ -104,7 +104,7 @@ class VgmStream:
 
 	vgm_source_clock = 0
 	vgm_target_clock = 0
-	
+	vgm_filename = ''
 	
 	# Supported VGM versions
 	supported_ver_list = [
@@ -113,6 +113,7 @@ class VgmStream:
 		0x00000150,
 		0x00000151,
 		0x00000160,
+		0x00000161,
 	]
 
 	# VGM metadata offsets
@@ -267,13 +268,47 @@ class VgmStream:
 				'size': 4,
 				'type_format': '<I',
 			},
-		}		
+			
+		},		
+		# SDM Hacked version number, we are happy enough to parse v1.61 as if it were 1.50 since the 1.51 updates dont apply to us anyway
+		0x00000161: {
+			'vgm_ident': {'offset': 0x00, 'size': 4, 'type_format': None},
+			'eof_offset': {'offset': 0x04, 'size': 4, 'type_format': '<I'},
+			'version': {'offset': 0x08, 'size': 4, 'type_format': '<I'},
+			'sn76489_clock': {'offset': 0x0c, 'size': 4, 'type_format': '<I'},
+			'ym2413_clock': {'offset': 0x10, 'size': 4, 'type_format': '<I'},
+			'gd3_offset': {'offset': 0x14, 'size': 4, 'type_format': '<I'},
+			'total_samples': {'offset': 0x18, 'size': 4, 'type_format': '<I'},
+			'loop_offset': {'offset': 0x1c, 'size': 4, 'type_format': '<I'},
+			'loop_samples': {'offset': 0x20, 'size': 4, 'type_format': '<I'},
+			'rate': {'offset': 0x24, 'size': 4, 'type_format': '<I'},
+			'sn76489_feedback': {
+				'offset': 0x28,
+				'size': 2,
+				'type_format': '<H',
+			},
+			'sn76489_shift_register_width': {
+				'offset': 0x2a,
+				'size': 1,
+				'type_format': 'B',
+			},
+			'ym2612_clock': {'offset': 0x2c, 'size': 4, 'type_format': '<I'},
+			'ym2151_clock': {'offset': 0x30, 'size': 4, 'type_format': '<I'},
+			'vgm_data_offset': {
+				'offset': 0x34,
+				'size': 4,
+				'type_format': '<I',
+			},
+		}
 	}
 
 	
 	# constructor - pass in the filename of the VGM
 	def __init__(self, vgm_filename):
-	
+
+		self.vgm_filename = vgm_filename
+		print "  VGM file loaded : '" + vgm_filename + "'"
+		
 		# open the vgm file and parse it
 		vgm_file = open(vgm_filename, 'rb')
 		vgm_data = vgm_file.read()
@@ -297,7 +332,7 @@ class VgmStream:
 		
 		# Display info about the file
 		
-		print "  VGM file loaded : '" + vgm_filename + "'"
+
 		print "      VGM Version : " + "%x" % int(self.metadata['version'])
 		print "VGM SN76489 clock : " + str(float(self.metadata['sn76489_clock'])/1000000) + " MHz"
 		print "         VGM Rate : " + str(float(self.metadata['rate'])) + " Hz"
@@ -360,8 +395,10 @@ class VgmStream:
 
 			try:
 				if self.data.read(4) != self.vgm_magic_number:
+					print "Error: Data does not appear to be a valid VGM file"
 					raise ValueError('Data does not appear to be a valid VGM file')
 			except IOError:
+				print "Error: Data does not appear to be a valid VGM file"
 				# IOError will be raised if the file is not a valid gzip file
 				raise ValueError('Data does not appear to be a valid VGM file')
 
@@ -440,22 +477,45 @@ class VgmStream:
 		# Once all the fields have been parsed, create a dict with the data
 		# some Gd3 tags dont have notes section
 		gd3_notes = ''
+		gd3_title_eng = self.vgm_filename
 		if len(gd3_fields) > 10:
 			gd3_notes = gd3_fields[10]
 			
-		self.gd3_data = {
-			'title_eng': gd3_fields[0],
-			'title_jap': gd3_fields[1],
-			'game_eng': gd3_fields[2],
-			'game_jap': gd3_fields[3],
-			'console_eng': gd3_fields[4],
-			'console_jap': gd3_fields[5],
-			'artist_eng': gd3_fields[6],
-			'artist_jap': gd3_fields[7],
-			'date': gd3_fields[8],
-			'vgm_creator': gd3_fields[9],
-			'notes': gd3_notes,
-		}
+		if len(gd3_fields) > 8:
+		
+			if len(gd3_fields[0]) > 0:
+				gd3_title_eng = gd3_fields[0]
+
+				
+			self.gd3_data = {
+				'title_eng': gd3_title_eng,
+				'title_jap': gd3_fields[1],
+				'game_eng': gd3_fields[2],
+				'game_jap': gd3_fields[3],
+				'console_eng': gd3_fields[4],
+				'console_jap': gd3_fields[5],
+				'artist_eng': gd3_fields[6],
+				'artist_jap': gd3_fields[7],
+				'date': gd3_fields[8],
+				'vgm_creator': gd3_fields[9],
+				'notes': gd3_notes
+			}		
+		else:
+			print "WARNING: Malformed/missing GD3 tag"
+			self.gd3_data = {
+				'title_eng': gd3_title_eng,
+				'title_jap': '',
+				'game_eng': '',
+				'game_jap': '',
+				'console_eng': '',
+				'console_jap': '',
+				'artist_eng': '',
+				'artist_jap': '',
+				'date': '',
+				'vgm_creator': '',
+				'notes': ''
+			}				
+
 
 		# Seek back to the original position in the VGM data
 		self.data.seek(original_pos)
@@ -1955,7 +2015,7 @@ class VgmStream:
 				if wait != 0:	
 					intervals = wait / (self.VGM_FREQUENCY / play_rate)
 					if intervals == 0:
-						print "ERROR in data stream, wait value was not divisible by play_rate, bailing"
+						print "ERROR in data stream, wait value (" + str(wait) + ") was not divisible by play_rate (" + str((self.VGM_FREQUENCY / play_rate)) + "), bailing"
 						return
 					else:
 						if self.VERBOSE: print "WAIT " + str(intervals) + " intervals"
