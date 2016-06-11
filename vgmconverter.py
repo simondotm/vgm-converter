@@ -1391,21 +1391,17 @@ class VgmStream:
 							vgm_time += t		
 							if self.VERBOSE: print "WAIT=" + str(t)
 						else:			
-							if pcommand == "66":
-								scommand = "END"
+							if pcommand == "66":	#end
 								# send the end command
 								output_command_list.append( { 'command' : command, 'data' : data } )
 								# end
 							else:
-								if pcommand == "62":
-									scommand = "WAIT60"
+								if pcommand == "62":	#wait60
 									vgm_time += 735
 								else:
-									if pcommand == "63":
-										scommand = "WAIT50"
+									if pcommand == "63":	#wait50
 										vgm_time += 882								
 									else:
-										scommand = "UNKNOWN"
 										unhandled_commands += 1		
 				
 				if self.VERBOSE: print "vgm_time=" + str(vgm_time) + ", playback_time=" + str(playback_time) + ", vgm_command_index=" + str(vgm_command_index) + ", output_command_list=" + str(len(output_command_list)) + ", command=" + scommand
@@ -1945,7 +1941,8 @@ class VgmStream:
 				packet_block.extend(q['data'])
 
 		# eof
-		data_block.append(0xFF)
+		data_block.append(0x00)	# append one last wait
+		data_block.append(0xFF)	# signal EOF
 		
 		print "Compressed VGM is " + str(len(data_block)) + " bytes long"
 		print " Found " + str(common_packets) + " common packets out of total " + str(packet_count) + " packets"
