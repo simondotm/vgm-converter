@@ -748,7 +748,7 @@ class VgmStream:
 			# used by the clock retuning code, initialized once at the start of the song, so that latched register states are preserved across the song
 			latched_tone_frequencies = [0, 0, 0, 0]
 			latched_volumes = [0, 0, 0, 0]
-			tone2_offsets = [0, 0]
+			tone2_offsets = [-1, -1]
 			latched_channel = 0		
 
 			# helper function
@@ -915,26 +915,32 @@ class VgmStream:
 								# a tuned noise effect
 								if True:
 									if (new_freq & 3 == 3) and latched_volumes[2] == 15:
-										#print "POTENTIAL RETUNE REQUIRED"
-										# ok we've detected a tuned noise on ch3, which is slightly more involved to correct. 
-										# some tunes setup ch2 tone THEN ch2 vol THEN start the periodic noise, so we have to detect this case.
-										# we record the index in the command stream of when tone on ch2 was last set
-										# then we refer backwards to find the last ch2 tone write & correct it
-										# the current latched_tone_frequency is captured though, so transpose that as usual
-										f = recalc_frequency(latched_tone_frequencies[2], True)
-															
-										# now write back to the previous channel 2 tone command(s) with the newly corrected frequency
-										zdata = self.command_list[tone2_offsets[0]]["data"]
-										zw = int(binascii.hexlify(zdata), 16)
-										lo_data = (zw & 0b11110000) | (f & 0b00001111)
-										self.command_list[tone2_offsets[0]]["data"] = struct.pack('B', lo_data)
 										
-										# if this was part of a multi-write command (eg. one LATCH/DATA followed by one DATA write)
-										# update the second command too, with the correct frequency
-										if tone2_offsets[1] >= 0:
-											hi_data = (f>>4) & 0b00111111
-											self.command_list[tone2_offsets[1]]["data"] = struct.pack('B', hi_data)		
-											tone2_offsets[1] = -1 # reset offset
+										if tone2_offsets[0] < 0:
+											print "Unexepected scenario - tone2 offset is not set"
+										else:
+											#print "POTENTIAL RETUNE REQUIRED"
+											# ok we've detected a tuned noise on ch3, which is slightly more involved to correct. 
+											# some tunes setup ch2 tone THEN ch2 vol THEN start the periodic noise, so we have to detect this case.
+											# we record the index in the command stream of when tone on ch2 was last set
+											# then we refer backwards to find the last ch2 tone write & correct it
+											# the current latched_tone_frequency is captured though, so transpose that as usual
+											f = recalc_frequency(latched_tone_frequencies[2], True)
+																
+											# now write back to the previous channel 2 tone command(s) with the newly corrected frequency
+											zdata = self.command_list[tone2_offsets[0]]["data"]
+											zw = int(binascii.hexlify(zdata), 16)
+											lo_data = (zw & 0b11110000) | (f & 0b00001111)
+											
+
+											self.command_list[tone2_offsets[0]]["data"] = struct.pack('B', lo_data)
+											
+											# if this was part of a multi-write command (eg. one LATCH/DATA followed by one DATA write)
+											# update the second command too, with the correct frequency
+											if tone2_offsets[1] >= 0:
+												hi_data = (f>>4) & 0b00111111
+												self.command_list[tone2_offsets[1]]["data"] = struct.pack('B', hi_data)		
+												tone2_offsets[1] = -1 # reset offset
 									
 									
 
@@ -968,7 +974,7 @@ class VgmStream:
 	# iterate through the command list, removing any duplicate volume or tone writes
 	def optimize(self):
 
-		print "   VGM Processing : Optimizing VGM "
+		print "   VGM Processing : Optimizing VGM Stream "
 
 		# total number of commands in the vgm stream
 		num_commands = len(self.command_list)
@@ -978,13 +984,22 @@ class VgmStream:
 		latched_channel = 0		
 			
 		optimized_command_list = []
-		output_command_list = []
 
 		removed_volume_count = 0
 		removed_tone_count = 0
 		
+		skip_next_data_write = False
+		
+		first_command = True
+		
 		for i in range(num_commands):
 			
+			# check if previous command has detected a redundant tone data write
+			# and move along if so.
+			if skip_next_data_write:
+				skip_next_data_write = False
+				continue
+				
 			# fetch next command & associated data
 			command = self.command_list[i]["command"]
 			data = self.command_list[i]["data"]
@@ -997,42 +1012,61 @@ class VgmStream:
 
 				pdata = binascii.hexlify(data)
 				w = int(pdata, 16)	
-
+				
+				# capture current channel
+				last_latched_channel = latched_channel
+				if w & 128:
+					latched_channel = (w>>5)&3
+				
+				
 				# latch volumes so that we can strip duplicate volume writes
 				if True:
-					if w & 128:
-					
-						latched_channel = (w>>5)&3
-						
-						if (w & 16):	
-							vol = w & 15
-							# check if volume is the same and discard if so
-							if latched_volumes[latched_channel] != -1 and vol == latched_volumes[latched_channel]:
-								#print "Removed duplicate volume write"
-								removed_volume_count += 1
-								continue
-							else:
-								latched_volumes[latched_channel] = vol
+					if (w & 128+16) == (128+16):
+						vol = w & 15
+						# check if volume is the same and discard if so
+						if latched_volumes[latched_channel] != -1 and vol == latched_volumes[latched_channel]:
+							#print "Removed duplicate volume write"
+							removed_volume_count += 1
+							latched_channel = last_latched_channel
+							continue
 						else:
-							# get low 4 bits and merge with latched channel's frequency register
-							tone = (w & 0b00001111)
-							if latched_tone_frequencies[latched_channel] != -1 and (latched_tone_frequencies[latched_channel] & 0b0000001111) == tone:
-								#print "Removed duplicate tone write"
-								removed_tone_count += 1
-								continue
-							else:
-								latched_tone_frequencies[latched_channel] = (latched_tone_frequencies[latched_channel] & 0b1111110000) | tone
+							latched_volumes[latched_channel] = vol
+
+				# strip duplicate tone writes
+				if True:
+					if (w & 128+16) == 128:
+						
+						# get low 4 bits and merge with latched channel's frequency register
+						tone_lo = (w & 0b00001111)
+						tone_hi = latched_tone_frequencies[latched_channel] & 0b1111110000
+						
+						# look ahead to see if next command is a tone data write
+						if i < num_commands-1:
+						
+							# fetch next command & associated data
+							c = self.command_list[i+1]
+							
+							ncommand = c["command"]
+							ndata = c["data"]
+						
+							# write command - add to optimized command list
+							if ncommand == struct.pack('B', 0x50):
+
+								nw = int(binascii.hexlify(ndata), 16)	
+								if nw & 128 == 0:
+									tone_hi = (nw & 0b0000111111) << 4
+									skip_next_data_write = True
 								
-					else:
-						# get low 6 bits and merge with latched channel's frequency register
-						tone = (w & 0b00111111)
-						if latched_tone_frequencies[latched_channel] != -1 and (latched_tone_frequencies[latched_channel] >> 4) == tone:
+						tone = tone_lo | tone_hi	
+						
+						if latched_tone_frequencies[latched_channel] != -1 and (latched_tone_frequencies[latched_channel] == tone):
 							#print "Removed duplicate tone write"
 							removed_tone_count += 1
 							continue
 						else:
-							latched_tone_frequencies[latched_channel] = (latched_tone_frequencies[latched_channel] & 0b0000001111) | (tone << 4)
-							
+							latched_tone_frequencies[latched_channel] = tone
+							skip_next_data_write = False
+
 					
 				# add the latest command to the list
 				optimized_command_list.append( { 'command' : command, 'data' : data } )				
@@ -1052,6 +1086,7 @@ class VgmStream:
 	# given a subset command list, sort the commands so that volumes come before tones
 	# returns a new list object containing the sorted command list
 	def sort_command_list(self, input_commands):
+		#return input_commands
 		volume_list = []
 		tone_list = []
 		
@@ -1092,7 +1127,7 @@ class VgmStream:
 	# to detect tuned noise effects and compensate accordingly. Sorting register updates makes this more accurate.
 	def optimize2(self):
 
-		print "   VGM Processing : Optimizing VGM "
+		print "   VGM Processing : Optimizing VGM Packets "
 
 		# total number of commands in the vgm stream
 		num_commands = len(self.command_list)	
@@ -1121,7 +1156,6 @@ class VgmStream:
 				
 
 				if (len(optimized_command_list) > 0):					
-					# first check for volume writes as these are easier
 
 					# Check if LATCH/DATA write enabled - since this is the start of a write command
 					if w & 128:
@@ -1129,6 +1163,7 @@ class VgmStream:
 						channel = (w>>5)&3
 						
 
+						# first check for volume writes as these are easier
 						# Check if VOLUME flag set
 						if (w & 16):
 							# scan previous commands to see if same channel volume has been set
@@ -2103,7 +2138,7 @@ if option_rawfile != None:
 		option_quantize = 60
 	
 # debug code	
-if True:
+if False:
 	print "source " + str(source_filename)
 	print "verbose " + str(option_verbose)
 	print "output " + str(option_outputfile)
@@ -2134,14 +2169,17 @@ if option_filter != None:
 		vgm_stream.filter_channel(3)
 
 # Fixed optimization - non-lossy. Only removes duplicate register writes that are wholly unnecessary		
-#vgm_stream.optimize()
+vgm_stream.optimize()
 
 # Second optimization - for each update interval, eliminate redundant register writes 
 # and sort the writes for each interval so that volumes are set before tones.
 # This is in principle 'lossy' since the output VGM will be different to the source, but 
 # technically it will not influence the output audio stream.
 vgm_stream.optimize2()		
-		
+	
+# Run first optimization again to take advantage of any redundancy from last optimization
+vgm_stream.optimize()	
+	
 # apply transpose
 if option_transpose != None:
 	vgm_stream.transpose(option_transpose)
@@ -2150,7 +2188,14 @@ if option_transpose != None:
 if option_quantize != None:
 	hz = int(option_quantize)
 	vgm_stream.quantize(hz)
+	
+	# optimize the stream
+	vgm_stream.optimize()
+	# optimize the packets
 	vgm_stream.optimize2()
+	# optimize the stream again, since packet optimization may have reduced data set further
+	vgm_stream.optimize()
+
 
 # emit a raw binary file if required
 if option_rawfile != None:
