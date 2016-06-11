@@ -92,7 +92,6 @@ class VgmStream:
 
 
 	# script options
-	OPTIMIZE_COMMANDS = False # [LEGACY] if true will optimize any redundant register writes that occur when the song is quantized
 	RETUNE_PERIODIC = True	# [TO BE REMOVED] if true will attempt to retune any use of the periodic noise effect
 	VERBOSE = False
 	STRIP_GD3 = False	
@@ -1378,98 +1377,6 @@ class VgmStream:
 					pcommand = binascii.hexlify(command)
 				
 					if pcommand == "50":
-						scommand = "WRITE"
-
-						pdata = binascii.hexlify(data)
-						w = int(pdata, 16)	
-
-
-
-						
-						# OPTIMIZATION - see if the new register write supersedes a previous one, and remove redundant earlier writes
-						if (self.OPTIMIZE_COMMANDS == True):
-							if (len(quantized_command_list) > 0):					
-								# first check for volume writes as these are easier
-
-								
-								
-
-								# Check if LATCH/DATA write enabled - since this is the start of a write command
-								if w & 128:
-									# Get channel id
-									channel = (w>>5)&3
-
-									# Check if VOLUME flag set
-									if (w & 16):
-										# scan previous commands to see if same channel volume has been set
-										# if so, remove the previous one
-										temp_command_list = []
-										for c in quantized_command_list:
-											qdata = c["data"]
-											qw = int(binascii.hexlify(qdata), 16)
-											redundant = False
-											
-											# Check if LATCH/DATA write enabled 
-											if qw & 128:
-										
-											
-												# Check if VOLUME flag set
-												if (qw & 16):
-													# Get channel id
-													qchannel = (qw>>5)&3
-													if (qchannel == channel):
-														redundant = True
-											
-											# we cant remove the item directly from quantized_command_list since we are iterating through it
-											# so we build a second optimized list
-											if (not redundant):
-												temp_command_list.append(c)
-											else:
-												if self.VERBOSE: print "Removed redundant volume write"
-												
-											# replace command list with optimized command list
-											quantized_command_list = temp_command_list
-									
-									else:
-										# process tones, these are a bit more complex, since they might comprise two commands
-										
-										# scan previous commands to see if a tone has been previously set on the same channel
-										# if so, remove the previous one
-										temp_command_list = []
-										redundant_tone_data = False	# set to true if 
-										for c in quantized_command_list:
-											qdata = c["data"]
-											qw = int(binascii.hexlify(qdata), 16)
-		
-											redundant = False
-											
-											# if a previous tone command was removed as redundant, any subsequent non-latch tone writes are also redundant
-											if (redundant_tone_data == True):
-												redundant_tone_data = False
-												if (qw & 128) == 0:	# detect non latched data write
-													redundant = True
-											else:
-												# Check if LATCH/DATA write enabled 
-												if qw & 128:
-												
-													# Check if VOLUME flag NOT set (ie. TONE)
-													if (qw & 16) == 0:
-														# Get channel id
-														qchannel = (qw>>5)&3
-														if (qchannel == channel):
-															redundant = True
-															redundant_tone_data = True	# indicate that if next command is a non-latched tone data write, it too is redundant
-											
-											# we cant remove the item directly from quantized_command_list since we are iterating through it
-											# so we build a second optimized list
-											if (not redundant):
-												temp_command_list.append(c)
-											else:
-												if self.VERBOSE: print "Removed redundant tone write"
-												
-											# replace command list with optimized command list
-											quantized_command_list = temp_command_list							
-						
 						# add the latest command to the list
 						quantized_command_list.append( { 'command' : command, 'data' : data } )
 					else:
