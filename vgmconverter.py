@@ -104,6 +104,8 @@ class VgmStream:
 	vgm_source_clock = 0
 	vgm_target_clock = 0
 	vgm_filename = ''
+	vgm_loop_offset = 0
+	vgm_loop_length = 0
 	
 	# Supported VGM versions
 	supported_ver_list = [
@@ -330,14 +332,15 @@ class VgmStream:
 		self.parse_metadata()
 		
 		# Display info about the file
+		self.vgm_loop_offset = self.metadata['loop_offset']
+		self.vgm_loop_length = self.metadata['loop_samples']
 		
-
 		print "      VGM Version : " + "%x" % int(self.metadata['version'])
 		print "VGM SN76489 clock : " + str(float(self.metadata['sn76489_clock'])/1000000) + " MHz"
 		print "         VGM Rate : " + str(float(self.metadata['rate'])) + " Hz"
 		print "      VGM Samples : " + str(int(self.metadata['total_samples'])) + " (" + str(int(self.metadata['total_samples'])/self.VGM_FREQUENCY) + " seconds)"
-
-
+		print "  VGM Loop Offset : " + str(self.vgm_loop_offset)
+		print "  VGM Loop Length : " + str(self.vgm_loop_length)
 
 
 
