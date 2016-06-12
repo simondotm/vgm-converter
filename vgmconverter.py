@@ -1118,6 +1118,16 @@ class VgmStream:
 								
 						tone = tone_lo | tone_hi	
 						
+						# EXPERIMENTAL - remove non-white noise tones on channel 3
+						# since they cannot be translated to different clocks.
+						# doesnt seem to work as expected. :/
+						if False:
+							if self.vgm_target_clock != self.vgm_source_clock:
+								if latched_channel == 3 and (tone & 4) == 0:
+									if tone & 3 != 3:
+										removed_tone_count += 1
+										continue							
+						
 						if latched_tone_frequencies[latched_channel] != -1 and (latched_tone_frequencies[latched_channel] == tone):
 							#print "Removed duplicate tone write"
 							removed_tone_count += 1
