@@ -1146,8 +1146,12 @@ class VgmStream:
 	# returns a new list object containing the sorted command list
 	def sort_command_list(self, input_commands):
 		#return input_commands
+		
+		# sorted by type
 		volume_list = []
 		tone_list = []
+		
+		
 		
 		for c in input_commands:
 			
@@ -1169,6 +1173,53 @@ class VgmStream:
 					
 			else:
 				print "ERROR - WAS NOT EXPECTING non register data in command list"
+		
+		
+		##### EXPERIMENTAL CODE TO SORT COMMANDS INTO CHANNEL ORDER ####
+		# Part of some tests to see if compression can be improved.
+		# Disabled for the moment
+		if False:
+			# sorted by type & channel
+			volume_channel_list = []
+			tone_channel_list = []
+
+			# sort volumes into channel order
+			for channel in range(0,4):
+				for c in volume_list:
+					# fetch next command & associated data
+					command = c["command"]
+					data = c["data"]
+					
+					if binascii.hexlify(command) == "50":
+						w = int(binascii.hexlify(data), 16)		
+						# already know its a volume command, so just check channel
+						if ((w >> 5) & 3) == channel:
+							volume_channel_list.append( c )
+				
+			# sort tones into channel order
+			for channel in range(0,4):
+				next_tone_write = False
+				for c in tone_list:
+					# fetch next command & associated data
+					command = c["command"]
+					data = c["data"]
+					
+					if binascii.hexlify(command) == "50":
+						w = int(binascii.hexlify(data), 16)		
+						# already know its a tone command, so just check channel
+						if (w & 128):
+							if ((w >> 5) & 3) == channel:
+								tone_channel_list.append( c )	
+								next_tone_write = True
+						else:
+							if next_tone_write:
+								tone_channel_list.append( c )
+								next_tone_write = False
+			
+			# replace original lists with sorted lists
+			volume_list = volume_channel_list
+			tone_list = tone_channel_list
+
 		
 		# return the commands sorted into volumes first followed by tones
 		output_list = []
@@ -1857,39 +1908,130 @@ class VgmStream:
 	# [0xff] - eof
 	# Max packet length will be 11 bytes as that is all that is needed to update all SN tone + volume registers for all 4 channels in one interval.
 
+	def insights(self):
 	
-	def write_binary(self, filename):
-		print "   VGM Processing : Output binary file "
-		byte_size = 1
-		packet_size = 0
-		play_rate = self.metadata['rate']
-		play_interval = self.VGM_FREQUENCY / play_rate
-		data_block = bytearray()
-		packet_block = bytearray()
+		print "--------------------------------------"
+		print "insights"
+		print "--------------------------------------"
 
 		packet_dict = []
+		volume_packet_dict = []
+		tone_packet_dict = []
+		
+		volume_dict = []
+		volume_write_count = 0
+		
+		tone_dict = []
+		tone_latch_write_count = 0
+		tone_data_write_count = 0
+		tone_single_write_count = 0
+		tone_count_7bit = 0
+
+		
+		packet_size_counts = [0,0,0,0,0,0,0,0,0,0,0,0,0]
+		
 		common_packets = 0
 		packet_count = 0
 		
+		packet_block = bytearray()
+		volume_packet_block = bytearray()
+		tone_packet_block = bytearray()
 		
+		tone_value = 0
 		
-		
-		
-		# emit the packet data
+		tone_latch_write = False 
 		for q in self.command_list:
 			
 			command = q["command"]
-			if command != struct.pack('B', 0x50):
-			
-				# non-write command, so flush any pending packet data
-				if self.VERBOSE: print "Packet length " + str(len(packet_block))
+			if command == struct.pack('B', 0x50):
+	
+				data = q['data']	
+				packet_block.extend(data)
+				
+				w = int(binascii.hexlify(data), 16)		
+				
+				# gather volume data
+				if w & (128+16) == (128+16):
+				
+					# handle tones where only one write occurred
+					if tone_latch_write == True:
+						tone_single_write_count += 1
+						if tone_value not in tone_dict:
+							tone_dict.append(tone_value)
+							
+					volume_packet_block.extend(data)
+					volume_write_count += 1
+					if w not in volume_dict:
+						volume_dict.append(w)
+					tone_latch_write = False
 
-				data_block.append(struct.pack('B', len(packet_block)))
-				data_block.extend(packet_block)
+						
+				# gather tone latch data
+				if w & (128+16) == 128:
+					tone_packet_block.extend(data)
+					tone_latch_write_count += 1
+					
+					# handle tones where only one write occurred
+					if tone_latch_write == True:
+						tone_single_write_count += 1
+						if tone_value not in tone_dict:
+							tone_dict.append(tone_value)
+
+							
+					tone_value = w & 15				
+					tone_latch_write = True
+
+				
+				# gather tone data
+				if (w & 128) == 0:
+					if tone_latch_write == False:
+						print "UNEXPECTED tone data write with no previous latch write"
+					tone_packet_block.extend(data)
+					tone_data_write_count += 1
+					tone_latch_write = False
+					tone_value |= (w & 63) << 4
+					if tone_value not in tone_dict:
+						tone_dict.append(tone_value)
+
+					
+			else:
 				packet_count += 1
 				
-				# build up a dictionary of packets - curious to see how much repetition exists
-				if True:
+				packet_size_counts[len(packet_block)] += 1
+				
+				def process_packet(dict, block):
+					# build up a dictionary of packets - curious to see how much repetition exists
+					new_packet = True
+
+					for i in range(len(dict)):
+						pd = dict[i]
+						if len(pd) != len(block):
+							#print "Different size - so doesnt match"
+							continue
+						else:
+							#print "Found packet with matching size"
+							# same size so compare
+							match = True
+							for j in range(len(pd)):
+								if pd[j] != block[j]:
+									match = False
+							# we found a match, so it wont be added to the list
+							if (match == True):
+								new_packet = False
+								break
+								
+					if new_packet == True:
+						#print "Non matching - Adding packet"
+						dict.append(block)
+			
+				# add the various packets to dictionaries so we can determine level of repetition
+				process_packet(volume_packet_dict, volume_packet_block)
+				process_packet(tone_packet_dict, tone_packet_block)
+				
+				process_packet(packet_dict, packet_block)
+				
+				if False:
+					# build up a dictionary of packets - curious to see how much repetition exists
 					new_packet = True
 
 					for i in range(len(packet_dict)):
@@ -1914,7 +2056,90 @@ class VgmStream:
 						packet_dict.append(packet_block)
 					else:
 						common_packets += 1
-						#print "Found matching packet " + str(len(packet_block)) + " bytes"
+						#print "Found matching packet " + str(len(packet_block)) + " bytes"		
+				
+				# start new packet
+				packet_block = bytearray()
+				volume_packet_block = bytearray()
+				tone_packet_block = bytearray()
+
+				
+#		print " Found " + str(common_packets) + " common packets out of total " + str(packet_count) + " packets"
+
+		print " There were " + str(len(packet_dict)) + " unique packets out of total "+ str(packet_count) + " packets"
+		print " There were " + str(len(volume_packet_dict)) + " unique volume packets out of total "+ str(packet_count) + " packets"
+		print " There were " + str(len(tone_packet_dict)) + " unique tone packets out of total "+ str(packet_count) + " packets"
+		print ""
+		
+		def get_packet_dict_size(dict):
+			sz = 0
+			for p in dict:
+				sz += len(p)
+			return sz
+			
+		print " Packet dictionary size " + str(get_packet_dict_size(packet_dict)) + " bytes"
+		print " Volume dictionary size " + str(get_packet_dict_size(volume_packet_dict)) + " bytes"
+		print "   Tone dictionary size " + str(get_packet_dict_size(tone_packet_dict)) + " bytes"
+		print ""
+		
+		print " Number of unique volumes " + str(len(volume_dict)) + " (max 64)"	# should max out at 64 (4x16)
+		print " Number of volume writes " + str(volume_write_count)
+		print ""
+		print " Number of unique tones " + str(len(tone_dict))
+		print " Number of tone latch writes " + str(tone_latch_write_count)
+		print " Number of tone data writes " + str(tone_data_write_count)
+		print " Number of single tone latch writes " + str(tone_single_write_count)
+		print ""
+		print " Packet size distributions (0-11 bytes):"
+		print packet_size_counts
+		tp = 0
+		bs = 0
+		size = 1
+		for n in packet_size_counts:
+			tp += n
+			bs += n * size
+			size += 1
+			
+		print " (total packets " + str(tp) + ")"
+		print " (total stream bytesize " + str(bs) + ")"
+		print " (write count byte size " + str(volume_write_count+tone_latch_write_count+tone_data_write_count+packet_count) + ")"
+
+		print " Volume writes represent " + str( volume_write_count * 100 / (bs-packet_count) ) + " % of filesize"
+		print "   Tone writes represent " + str( (tone_latch_write_count+tone_data_write_count) * 100 / (bs-packet_count) ) + " % of filesize"
+		
+		print " Filesize using packet LUT " + str( packet_count*2 + get_packet_dict_size(packet_dict))
+		print " Filesize using vol/tone packet LUT " + str( packet_count*4 + get_packet_dict_size(volume_packet_dict) + get_packet_dict_size(tone_packet_dict) )
+		print "--------------------------------------"
+	
+	#--------------------------------------------------------------------------------------------------------------
+	
+	def write_binary(self, filename):
+		print "   VGM Processing : Output binary file "
+		
+		# debug data to dump out information about the packet stream
+		#self.insights()
+		
+		byte_size = 1
+		packet_size = 0
+		play_rate = self.metadata['rate']
+		play_interval = self.VGM_FREQUENCY / play_rate
+		data_block = bytearray()
+		packet_block = bytearray()
+
+		packet_count = 0
+		
+		# emit the packet data
+		for q in self.command_list:
+			
+			command = q["command"]
+			if command != struct.pack('B', 0x50):
+			
+				# non-write command, so flush any pending packet data
+				if self.VERBOSE: print "Packet length " + str(len(packet_block))
+
+				data_block.append(struct.pack('B', len(packet_block)))
+				data_block.extend(packet_block)
+				packet_count += 1
 				
 				# start new packet
 				packet_block = bytearray()
@@ -1949,6 +2174,8 @@ class VgmStream:
 						data_block.append(0)
 						if self.VERBOSE: print "Packet length 0"
 						intervals -= 1
+						packet_count += 1
+
 				
 				
 			else:
@@ -1970,7 +2197,7 @@ class VgmStream:
 		duration = packet_count / play_rate
 		duration_mm = int(duration / 60.0)
 		duration_ss = int(duration % 60.0)
-		print "    Song duration " + str(duration) + " packets, " + str(duration_mm) + "m" + str(duration_ss) + "s"
+		print "    Song duration " + str(duration) + " seconds, " + str(duration_mm) + "m" + str(duration_ss) + "s"
 		header_block.append(struct.pack('B', duration_mm))	# minutes		
 		header_block.append(struct.pack('B', duration_ss))	# seconds
 		
@@ -2009,7 +2236,7 @@ class VgmStream:
 		
 		# write file
 		print "Compressed VGM is " + str(len(output_block)) + " bytes long"
-		print " Found " + str(common_packets) + " common packets out of total " + str(packet_count) + " packets"
+
 		# write to output file
 		bin_file = open(filename, 'wb')
 		bin_file.write(output_block)
