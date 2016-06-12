@@ -91,10 +91,33 @@ All of the above:
 
 Intended as a compact data format of the VGM for memory-constrained 8-bit platforms, the binary format is structured as follows:
 
+`<header section>`
+` [byte] - header size - indicates number of bytes in header section`
+` [byte] - indicates the required playback rate in Hz eg. 50/60/100`
+` [byte] - packet count lsb`
+` [byte] - packet count msb`
+` [byte] - duration minutes`
+` [byte] - duration seconds`
+`<title section>`
+` [byte] - title string size`
+` [dd] ... - ZT title string`
+`<author section>`
+` [byte] - author string size`
+` [dd] ... - ZT author string`
+`<packets section>`
+` [byte] - indicating number of data writes within the current packet (max 11)`
+` [dd] ... - data`
+` [byte] - number of data writes within the next packet`
+` [dd] ... - data`
+` ...`
+`<eof section>`
+` [0xff] - eof`
+	
+	
 * SN76489 sound chip data is organised into a stream of packets - 1 packet per playback interval (50Hz = 20ms etc.)
-* 1 byte header containing playback interval in Hz (eg. 50/60/100). This is followed by the packet data.
 * Each packet contains a header byte followed by upto 11 bytes of sound chip data
-* The header byte indicates how many data bytes are in the packet, or 0 if no data needs to be sent to the sound chip for this interval.
+* Max packet length can only be 11 bytes as that is all that is needed to update all SN tone + volume registers for all 4 channels in one interval.
+* The header byte for the packet indicates how many data bytes are in the packet, or 0 if no data needs to be sent to the sound chip for this interval.
 * This is then repeated for the duration of the song
 * The file ends with 0xFF
 

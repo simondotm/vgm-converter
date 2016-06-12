@@ -27,7 +27,7 @@ import struct
 import sys
 import binascii
 import math
-
+from os.path import basename
 
 if (sys.version_info > (3, 0)):
 	from io import BytesIO as ByteBuffer
@@ -476,7 +476,7 @@ class VgmStream:
 		# Once all the fields have been parsed, create a dict with the data
 		# some Gd3 tags dont have notes section
 		gd3_notes = ''
-		gd3_title_eng = self.vgm_filename
+		gd3_title_eng = basename(self.vgm_filename).encode("utf_16")
 		if len(gd3_fields) > 10:
 			gd3_notes = gd3_fields[10]
 			
@@ -508,7 +508,7 @@ class VgmStream:
 				'game_jap': '',
 				'console_eng': '',
 				'console_jap': '',
-				'artist_eng': '',
+				'artist_eng': 'Unknown'.encode("utf_16"),
 				'artist_jap': '',
 				'date': '',
 				'vgm_creator': '',
@@ -1832,14 +1832,31 @@ class VgmStream:
 	# iterate through the command list, seeing how we might be able to reduce filesize
 	# binary format schema is:
 	# We assume the VGM has been quantized to fixed intervals. Therefore we do not need to emit wait commands, just packets of data writes.
-	# [header byte] - indicates the required playback rate in Hz
-	# [byte] - indicating number of data writes within the current packet (max 11)
-	# [dd] ... - data
-	# [byte] - number of data writes within the next packet
-	# [dd] ... - data
-	# ...
+
+	# <header>
+	#  [byte] - header size - indicates number of bytes in header section
+	#  [byte] - indicates the required playback rate in Hz
+	#  [byte] - packet count lsb
+	#  [byte] - packet count msb
+	#  [byte] - duration minutes
+	#  [byte] - duration seconds
+	# todo: add looping offsets
+	# <title>
+	#  [byte] - title string size
+	#  [dd] ... - ZT title string
+	# <author>
+	#  [byte] - author string size
+	#  [dd] ... - ZT author string
+	# <packets>
+	#  [byte] - indicating number of data writes within the current packet (max 11)
+	#  [dd] ... - data
+	#  [byte] - number of data writes within the next packet
+	#  [dd] ... - data
+	#  ...
+	# <eof>
 	# [0xff] - eof
 	# Max packet length will be 11 bytes as that is all that is needed to update all SN tone + volume registers for all 4 channels in one interval.
+
 	
 	def write_binary(self, filename):
 		print "   VGM Processing : Output binary file "
@@ -1854,8 +1871,6 @@ class VgmStream:
 		common_packets = 0
 		packet_count = 0
 		
-		# emit the play rate
-		data_block.append(struct.pack('B', play_rate))
 		
 		
 		
@@ -1944,11 +1959,60 @@ class VgmStream:
 		data_block.append(0x00)	# append one last wait
 		data_block.append(0xFF)	# signal EOF
 		
-		print "Compressed VGM is " + str(len(data_block)) + " bytes long"
+		
+		header_block = bytearray()
+		# emit the play rate
+		header_block.append(struct.pack('B', play_rate))
+		header_block.append(struct.pack('B', packet_count & 0xff))		
+		header_block.append(struct.pack('B', (packet_count >> 8) & 0xff))	
+
+		print "    Num packets " + str(packet_count)
+		duration = packet_count / play_rate
+		duration_mm = int(duration / 60.0)
+		duration_ss = int(duration % 60.0)
+		print "    Song duration " + str(duration) + " packets, " + str(duration_mm) + "m" + str(duration_ss) + "s"
+		header_block.append(struct.pack('B', duration_mm))	# minutes		
+		header_block.append(struct.pack('B', duration_ss))	# seconds
+		
+		# output the final byte stream
+		output_block = bytearray()	
+		
+		# send header
+		output_block.append(struct.pack('B', len(header_block)))
+		output_block.extend(header_block)
+
+		# send title
+		title = self.gd3_data['title_eng'].decode("utf_16")
+		title = title.encode('ascii', 'ignore')
+		
+		if len(title) > 254:
+			title = title[:254]
+		output_block.append(struct.pack('B', len(title) + 1))	# title string length
+		output_block.extend(title)
+		output_block.append(struct.pack('B', 0))				# zero terminator
+		
+		# send author
+		author = self.gd3_data['artist_eng'].decode("utf_16")
+		author = author.encode('ascii', 'ignore')
+		# use filename if no author listed
+		if len(author) == 0:
+			author = basename(self.vgm_filename)
+		
+		if len(author) > 254:
+			author = author[:254]
+		output_block.append(struct.pack('B', len(author) + 1))	# author string length
+		output_block.extend(author)
+		output_block.append(struct.pack('B', 0))				# zero terminator
+		
+		# send data
+		output_block.extend(data_block)
+		
+		# write file
+		print "Compressed VGM is " + str(len(output_block)) + " bytes long"
 		print " Found " + str(common_packets) + " common packets out of total " + str(packet_count) + " packets"
 		# write to output file
 		bin_file = open(filename, 'wb')
-		bin_file.write(data_block)
+		bin_file.write(output_block)
 		bin_file.close()		
 		
 #------------------------------------------------------------------------------------------
