@@ -1012,6 +1012,9 @@ class VgmStream:
 								# typically tracks that use this effect will disable the volume of channel 2
 								# we detect this case and detune channel 2 tone by a further amount to correct for this
 								is_periodic_noise_tone = self.RETUNE_PERIODIC == True and latched_channel == 2 and latched_volumes[2] == 15 and (latched_tone_frequencies[3] & 3 == 3)
+								
+								#if latched_channel == 2 and latched_volumes[2] != 15 and (latched_tone_frequencies[3] & 3 == 3):
+								#	print "Found non-muted channel 2 with tuned channel 3 periodic noise "
 
 								new_freq = recalc_frequency(latched_tone_frequencies[latched_channel], is_periodic_noise_tone)
 							
@@ -1942,7 +1945,8 @@ class VgmStream:
 
 		
 		packet_size_counts = [0,0,0,0,0,0,0,0,0,0,0,0,0]
-		
+		packet_dict_counts = [0,0,0,0,0,0,0,0,0,0,0,0,0]
+
 		common_packets = 0
 		packet_count = 0
 		
@@ -2012,7 +2016,10 @@ class VgmStream:
 				
 				packet_size_counts[len(packet_block)] += 1
 				
+				# function to compare packets with dictionary library
+				# returns true if unique or false if in dictionary
 				def process_packet(dict, block):
+
 					# build up a dictionary of packets - curious to see how much repetition exists
 					new_packet = True
 
@@ -2036,12 +2043,16 @@ class VgmStream:
 					if new_packet == True:
 						#print "Non matching - Adding packet"
 						dict.append(block)
+
+					return new_packet
 			
 				# add the various packets to dictionaries so we can determine level of repetition
 				process_packet(volume_packet_dict, volume_packet_block)
 				process_packet(tone_packet_dict, tone_packet_block)
 				
-				process_packet(packet_dict, packet_block)
+				new_packet = process_packet(packet_dict, packet_block)
+				if new_packet == True:
+					packet_dict_counts[len(packet_block)] += 1
 				
 				if False:
 					# build up a dictionary of packets - curious to see how much repetition exists
@@ -2101,10 +2112,48 @@ class VgmStream:
 		print " Number of unique tones " + str(len(tone_dict))
 		print " Number of tone latch writes " + str(tone_latch_write_count)
 		print " Number of tone data writes " + str(tone_data_write_count)
+		print " Total 16-bit tone data writes " + str(tone_latch_write_count+tone_data_write_count)
 		print " Number of single tone latch writes " + str(tone_single_write_count)
 		print ""
 		print " Packet size distributions (0-11 bytes):"
-		print packet_size_counts
+
+		t = 0
+		for i in range(0,12):
+			t += packet_size_counts[i]
+		print packet_size_counts, t
+			
+
+		print ""
+		print " Unique Packet dict distributions (0-11 bytes):"
+		t = 0
+		for i in range(0,12):
+			t += packet_dict_counts[i]
+		print packet_dict_counts, t
+
+		print ""
+		print " Byte cost distributions (0-11 bytes):"
+		o = "[ "
+		t = 0
+		for i in range(0,12):
+			n = (packet_dict_counts[i]) * (i)
+			t += n
+			o += str(n) + ", "
+		print o + "]", t
+
+
+		print ""
+		print " Byte saving distributions (0-11 bytes):"
+		t = 0
+		o = "[ "
+		for i in range(0,12):
+			n = (packet_size_counts[i] - packet_dict_counts[i]) * (i)
+			t += n
+			o += str(n) + ", "
+		print o + "]", t
+
+
+
+		print ""
 		tp = 0
 		bs = 0
 		size = 1
@@ -2125,12 +2174,170 @@ class VgmStream:
 		print "--------------------------------------"
 	
 	#--------------------------------------------------------------------------------------------------------------
+
+	# Apply a sliding window dictionary compression to the packet data
+	def compress_packets(self):
+	
+		print "--------------------------------------"
+		print "packet compression"
+		print "--------------------------------------"
+
+		packet_list = []
+		packet_dict = []
+
+		output_stream = bytearray()
+		dict_stream = bytearray()
+		
+		packet_block = bytearray()
+
+		for q in self.command_list:
+			
+			command = q["command"]
+			if command == struct.pack('B', 0x50):
+	
+				data = q['data']	
+				packet_block.extend(data)
+
+			else:
+				packet_list.append(packet_block)
+
+				# start new packet
+				packet_block = bytearray()
+
+
+		print "Found " + str(len(packet_list)) + " packets"
+
+
+		# approach:
+		# as we process each new packet, scan a dictionary memory window to see if already exists
+		# if it does, emit an index into the dictionary, otherwise emit the new packet (and add it to the dictionary)
+
+		if True:
+
+
+
+			window_size = 2048	# must be power of 2, 2Kb seems to be the sweet spot
+			window_size_mask = window_size-1
+			window_ptr = 0
+			window_data = bytearray()
+			for i in range(0,window_size):
+				window_data.append(0)
+
+			# process all packets
+			# we wont support packets that 'wrap' the window
+			for packet in packet_list:
+
+
+				# see if new packet already exists in dictionary
+				packet_index = -1
+				packet_size = len(packet)
+
+				# only compress packets of a certain size
+				if packet_size > 2:
+					for i in range(0, window_size-packet_size):
+
+						# compare window at current index for a packet match
+						packet_found = True
+						for j in range(len(packet)):
+							index = (i+j) # & window_size_mask
+							if window_data[index] != packet[j]:
+								packet_found = False
+								break
+
+						if packet_found:
+							packet_index = i
+
+					if packet_index < 0:
+						# new packet, so add to dictionary
+						if window_ptr+packet_size > window_size:
+							window_ptr = 0
+
+						print "New packet added to window index " + str(window_ptr)
+						for j in range(packet_size):
+							window_data[window_ptr+j] = packet[j]
+
+						window_ptr += packet_size
+
+				# output data
+				if packet_index < 0:
+					# not found, emit the packet
+					output_stream.append(packet_size)
+					output_stream.extend(packet)
+				else:
+					print "Found packet at index " + str(packet_index)
+					output_stream.extend(struct.pack('h', packet_index))
+
+
+			print "Output stream size " + str(len(output_stream))
+			bin_file = open("xxx.bin", 'wb')
+			bin_file.write(output_stream)
+			bin_file.close()				
+		else:
+
+			# build up a dictionary of packets - curious to see how much repetition exists
+
+
+			total_new_packets = 0
+			for packet in packet_list:
+
+				packet_index = -1
+				# see if new packet already exists in dictionary
+				for i in range(len(packet_dict)):
+					pd = packet_dict[i]
+					if len(pd) != len(packet):
+						#print "Different size - so doesnt match"
+						continue
+					else:
+						#print "Found packet with matching size"
+						# same size so compare
+						match = True
+						for j in range(len(pd)):
+							if pd[j] != packet[j]:
+								match = False
+						# we found a match, so set the dictionary index
+						if (match == True):
+							packet_index = i
+							break
+							
+				if packet_index < 0:
+					#print "Non matching - Adding packet"
+					packet_index = len(packet_dict)
+					packet_dict.append(packet)
+					dict_stream.extend(packet)
+					total_new_packets += 1
+
+				output_stream.extend(struct.pack('h', packet_index))
+
+
+			print "Unique packets " + str(total_new_packets)
+			print "Dict stream size " + str(len(dict_stream))
+			print "Output stream size " + str(len(output_stream))
+
+
+			# write to output file
+			bin_file = open("xxx.bin", 'wb')
+			bin_file.write(output_stream)
+			bin_file.close()	
+			bin_file = open("xxx2.bin", 'wb')
+			bin_file.write(dict_stream)
+			bin_file.close()			
+
+		print "--------------------------------------"
+
+
+
+
+
+
+	
+	#--------------------------------------------------------------------------------------------------------------	
 	
 	def write_binary(self, filename):
 		print "   VGM Processing : Output binary file "
 		
 		# debug data to dump out information about the packet stream
 		#self.insights()
+		#self.compress_packets()
 		
 		byte_size = 1
 		packet_size = 0
@@ -2202,7 +2409,8 @@ class VgmStream:
 		
 		header_block = bytearray()
 		# emit the play rate
-		header_block.append(struct.pack('B', play_rate))
+		print "play rate is " + str(play_rate)
+		header_block.append(struct.pack('B', play_rate & 0xff))
 		header_block.append(struct.pack('B', packet_count & 0xff))		
 		header_block.append(struct.pack('B', (packet_count >> 8) & 0xff))	
 

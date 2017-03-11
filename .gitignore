@@ -1,0 +1,21 @@
+#################
+## ignores
+#################
+
+vgms/
+vgms-beeb/
+reference/
+*.bat
+*.exo
+*.raw
+*.zip
+*.exe
+*.ini
+*.vgm
+*.dll
+*.bin
+*.lz4
+
+
+
+
