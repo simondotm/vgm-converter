@@ -740,7 +740,12 @@ class VgmStream:
 	#-------------------------------------------------------------------------------------------------
 	def set_verbose(self, verbose):
 		self.VERBOSE = verbose
-		
+
+	#-------------------------------------------------------------------------------------------------
+	def set_length(self, length):
+		self.LENGTH = int(length)
+
+
 	#-------------------------------------------------------------------------------------------------
 		
 	# helper function
@@ -1412,6 +1417,15 @@ class VgmStream:
 		# first step is to quantize the command stream to the playback rate rather than the sample rate
 
 		output_command_list = []
+
+		# clip the output to the desired length if specified as non zero number of 'play_rate' frames
+		total_frames = self.LENGTH
+		if total_frames > 0:
+			print "Limiting total frames to " + str(total_frames)
+			print "original total_samples " + str(total_samples)
+			total_samples = (self.VGM_FREQUENCY * total_frames)
+			print "new total_samples " + str(total_samples)
+			self.metadata['total_samples'] = total_samples
 
 						
 		accumulated_time = 0
@@ -2361,6 +2375,9 @@ class VgmStream:
 				data_block.extend(packet_block)
 				packet_count += 1
 				
+				#if packet_count > 30*play_rate:
+				#	break
+
 				# start new packet
 				packet_block = bytearray()
 				
@@ -2578,7 +2595,7 @@ option_quantize = None
 option_filter = None
 option_rawfile = None
 option_dump = None
-
+option_length = None
 
 # process command line
 for i in range(2, len(argv)):
@@ -2606,7 +2623,10 @@ for i in range(2, len(argv)):
 								if option == 'v' or option == 'verbose':
 									option_verbose = True
 								else:
-									print "ERROR: Unrecognised option '" + arg + "'"
+									if option == 'l' or option == 'length':
+										option_length = argv[i+1]
+									else:
+										print "ERROR: Unrecognised option '" + arg + "'"
 
 # load the VGM
 if source_filename == None:
@@ -2638,6 +2658,11 @@ vgm_stream = VgmStream(source_filename)
 if option_verbose == True:
 	vgm_stream.set_verbose(True)
 	
+# Apply output length if provided
+if option_length != None:
+	vgm_stream.set_length(option_length)
+
+
 # apply channel filters
 if option_filter != None:
 	if option_filter.find('0') != -1:
