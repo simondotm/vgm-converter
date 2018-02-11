@@ -95,6 +95,7 @@ class VgmStream:
 	RETUNE_PERIODIC = True	# [TO BE REMOVED] if true will attempt to retune any use of the periodic noise effect
 	VERBOSE = False
 	STRIP_GD3 = False	
+	LENGTH = 0 # required output length (in seconds)
 	
 	# VGM file identifier
 	vgm_magic_number = b'Vgm '
@@ -625,14 +626,47 @@ class VgmStream:
 			
 		print "   VGM Processing : Writing output VGM file '" + filename + "'"
 		vgm_stream = bytearray()
-
+		vgm_time = 0
+		
 		# convert the VGM command list to a byte array
 		for elem in self.command_list:
 			command = elem['command']
 			data = elem['data']
 			
+
+			# track time offset for debug purposes
+			if b'\x70' <= command <= b'\x7f':	
+				pdata = binascii.hexlify(command)
+				t = int(pdata, 16)
+				t &= 15
+				t += 1
+				vgm_time += t
+				scommand = "WAITn"
+				#if self.VERBOSE: print " WAITN=" + str(t)
+			else:
+				pcommand = binascii.hexlify(command)
+			
+				if pcommand == "61":
+					scommand = "WAIT"
+					pdata = binascii.hexlify(data)
+					t = int(pdata, 16)
+					# sdm: swap bytes to LSB
+					lsb = t & 255
+					msb = (t / 256)
+					t = (lsb * 256) + msb
+					vgm_time += t		
+					#if self.VERBOSE: print " WAIT=" + str(t)
+				else:			
+					if pcommand == "62":	#wait60
+						vgm_time += 735
+					else:
+						if pcommand == "63":	#wait50
+							vgm_time += 882				
+			
+			
+			
 			if (data != None):
-				if self.VERBOSE: print "command=" + str(binascii.hexlify(command)) + ", data=" + str(binascii.hexlify(data))
+				if self.VERBOSE: print "command=" + str(binascii.hexlify(command)) + ", data=" + str(binascii.hexlify(data)) + ", time=" + str(float(vgm_time)/44100.0) + " secs"
 				
 			# filter dual chip
 			if b'\x30' == command:
@@ -788,7 +822,78 @@ class VgmStream:
 		
 		self.command_list = filtered_command_list
 
+	#-------------------------------------------------------------------------------------------------
+	# iterate through the command list, unpacking any single tone writes on a channel
+	def unpack_tones(self):
+		print "   VGM Processing : Unpacking tones "
+	
+		filtered_command_list = []
+		j = 0
+		latched_channel = 0
+		latched_tone_frequencies = [0, 0, 0, 0]
+		
+		for n in range(len(self.command_list)):
+			q = self.command_list[n]
 			
+			# we always output at least the same data stream, but we might inject a new tone write if needed
+			filtered_command_list.append(q)	
+			# only process write data commands
+			if q["command"] == struct.pack('B', 0x50):
+			
+				# Check if LATCH/DATA write 								
+				qdata = q["data"]
+				qw = int(binascii.hexlify(qdata), 16)
+				if qw & 128:					
+					# Get channel id and latch it
+					latched_channel = (qw>>5)&3
+					
+							
+					# Check if TONE update				
+					if (qw & 16) == 0:
+												
+						# get low 4 bits and merge with latched channel's frequency register
+						qfreq = (qw & 0b00001111)
+						latched_tone_frequencies[latched_channel] = (latched_tone_frequencies[latched_channel] & 0b1111110000) | qfreq
+
+							
+						# look ahead, and see if the next command is a DATA write as if so, this will be part of the same tone commmand
+						# so load this into our register as well so that we have the correct tone frequency to work with
+						
+						multi_write = False
+						nindex = n
+						while (nindex < (len(self.command_list)-1)):# check we dont overflow the array, bail if we do, since it means we didn't find any further DATA writes.
+							nindex += 1
+
+							ncommand = self.command_list[nindex]["command"]
+							# skip any non-VGM-write commands
+							if ncommand != struct.pack('B', 0x50):
+								continue
+							else:
+								# found the next VGM write command
+								ndata = self.command_list[nindex]["data"]
+
+								# Check if next this is a DATA write, and capture frequency if so
+								# otherwise, its a LATCH/DATA write, so no additional frequency to process
+								nw = int(binascii.hexlify(ndata), 16)
+								if (nw & 128) == 0:
+									multi_write = True
+									nfreq = (nw & 0b00111111)
+									latched_tone_frequencies[latched_channel] = (latched_tone_frequencies[latched_channel] & 0b0000001111) | (nfreq << 4)	
+							
+								break					
+					
+						# if we detected a single register tone write, we need as unpack it, to make sure transposing works correctly
+						if multi_write == False and latched_channel != 3:
+							if self.VERBOSE: print " UNPACKING SINGLE REGISTER TONE WRITE on CHANNEL " + str(latched_channel)
+							# inject additional tone write to prevent any more single register tone writes
+							# re-program q and re-cycle it
+							
+							hi_data = (latched_tone_frequencies[latched_channel]>>4) & 0b00111111
+							new_q = { "command" : q["command"], "data" : struct.pack('B', hi_data) }
+							filtered_command_list.append(new_q)
+
+		
+		self.command_list = filtered_command_list			
 	
 	#-------------------------------------------------------------------------------------------------
 	
@@ -796,6 +901,9 @@ class VgmStream:
 	# such that the output VGM plays at the same pitch as the original, but using the target clock speeds.
 	# Tuned periodic and white noise are also transposed.
 	def transpose(self, clock_type):
+		
+		self.unpack_tones()
+		
 		
 		# setup the correct target chip parameters
 		self.set_target_clock(clock_type)
@@ -817,12 +925,16 @@ class VgmStream:
 			latched_volumes = [0, 0, 0, 0]
 			tone2_offsets = [-1, -1]
 			latched_channel = 0		
-
+			vgm_time = 0
+		
 			# helper function
 			# calculates a retuned tone frequency based on given frequency & periodic noise indication
 			# returns retuned frequency. 
 			# does not change any external state
 			def recalc_frequency(tone_frequency, is_periodic_noise_tone = False):
+			
+				if self.VERBOSE: print " recalc_frequency(), vgm_time=" + str(vgm_time) + " clock time=" + str(float(vgm_time)/44100.0) + " secs"
+
 			
 				# compute the correct frequency
 				# first check it is not 0 (illegal value)
@@ -838,7 +950,7 @@ class VgmStream:
 					#      ( 2 x N x 16)                                 ( 2 x N x 16 x SR)
 					
 					if is_periodic_noise_tone:	
-						#print "Periodic noise"
+						if self.VERBOSE: print "Periodic noise tone"
 						noise_ratio = (15.0 / 16.0) * (float(self.vgm_source_clock) / float(self.vgm_target_clock))
 						v = float(tone_frequency) / noise_ratio
 						if self.VERBOSE: print "noise_ratio=" + str(noise_ratio)
@@ -846,7 +958,7 @@ class VgmStream:
 						if self.VERBOSE: print "retuned periodic noise effect on channel 2"										
 
 					else:
-						#print "Tone"				
+						if self.VERBOSE: print "Normal tone"				
 						# compute corrected tone register value for generating the same frequency using the target chip's clock rate
 						hz = float(self.vgm_source_clock) / ( 2.0 * float(tone_frequency) * 16.0)
 						if self.VERBOSE: print "hz=" + str(hz)
@@ -863,7 +975,11 @@ class VgmStream:
 					
 					hz1 = float(self.vgm_source_clock) / (2.0 * float(tone_frequency) * 16.0) # target frequency
 					hz2 = float(self.vgm_target_clock) / (2.0 * float(output_freq) * 16.0)
-					if self.VERBOSE: print "channel=" + str(latched_channel) + ", old frequency=" + str(tone_frequency) + ", new frequency=" + str(output_freq) + ", source_clock=" + str(self.vgm_source_clock) + ", target_clock=" + str(self.vgm_target_clock) + ", src_hz=" + str(hz1) + ", tgt_hz=" + str(hz2)
+					hz_err = hz2-hz1
+					if self.VERBOSE: print "channel=" + str(latched_channel) + ", old frequency=" + str(tone_frequency) + ", new frequency=" + str(output_freq) + ", source_clock=" + str(self.vgm_source_clock) + ", target_clock=" + str(self.vgm_target_clock) + ", src_hz=" + str(hz1) + ", tgt_hz=" + str(hz2) + ", hz_err =" + str(hz_err)
+					if hz_err > 1.0:
+						print "  Large error transposing tone! [" + str(hz_err) + "]"
+					#if self.VERBOSE: print ""
 				
 				return output_freq		
 
@@ -876,6 +992,39 @@ class VgmStream:
 			
 			for n in range(len(self.command_list)):
 				command = self.command_list[n]["command"]
+				
+				# track time offset for debug purposes
+				data = self.command_list[n]["data"]
+				if b'\x70' <= command <= b'\x7f':	
+					pdata = binascii.hexlify(command)
+					t = int(pdata, 16)
+					t &= 15
+					t += 1
+					vgm_time += t
+					scommand = "WAITn"
+					#if self.VERBOSE: print " WAITN=" + str(t)
+				else:
+					pcommand = binascii.hexlify(command)
+				
+					if pcommand == "61":
+						scommand = "WAIT"
+						pdata = binascii.hexlify(data)
+						t = int(pdata, 16)
+						# sdm: swap bytes to LSB
+						lsb = t & 255
+						msb = (t / 256)
+						t = (lsb * 256) + msb
+						vgm_time += t		
+						#if self.VERBOSE: print " WAIT=" + str(t)
+					else:			
+						if pcommand == "62":	#wait60
+							vgm_time += 735
+						else:
+							if pcommand == "63":	#wait50
+								vgm_time += 882								
+				
+				
+				
 				
 				# only process write data commands
 				if command == struct.pack('B', 0x50):
@@ -936,7 +1085,7 @@ class VgmStream:
 											dcount += 1
 										else:
 											#if dcount > 1:
-											print "DCOUNT=" + str(dcount) #DANGER WILL ROBINSON"
+											print "WARNING: DCOUNT=" + str(dcount) #DANGER WILL ROBINSON"
 											break
 								
 							# look ahead, and see if the next command is a DATA write as if so, this will be part of the same tone commmand
@@ -986,6 +1135,7 @@ class VgmStream:
 										if tone2_offsets[0] < 0:
 											print "Unexepected scenario - tone2 offset is not set"
 										else:
+
 											#print "POTENTIAL RETUNE REQUIRED"
 											# ok we've detected a tuned noise on ch3, which is slightly more involved to correct. 
 											# some tunes setup ch2 tone THEN ch2 vol THEN start the periodic noise, so we have to detect this case.
@@ -1036,7 +1186,8 @@ class VgmStream:
 							else:
 								if self.VERBOSE: print "SINGLE REGISTER TONE WRITE on CHANNEL " + str(latched_channel)
 
-							if self.VERBOSE: print "new_freq=" + format(new_freq, 'x') + ", lo_data=" + format(lo_data, '02x') + ", hi_data=" + format(hi_data, '02x')
+							if self.VERBOSE: print "new_freq=0x" + format(new_freq, 'x') + ", lo_data=0x" + format(lo_data, '02x') + ", hi_data=0x" + format(hi_data, '02x')
+							if self.VERBOSE: print ""
 		else:
 			print "transpose() - No transposing necessary as target clock matches source clock"
 			
@@ -2346,7 +2497,7 @@ class VgmStream:
 	
 	#--------------------------------------------------------------------------------------------------------------	
 	
-	def write_binary(self, filename):
+	def write_binary(self, filename, rawheader = True):
 		print "   VGM Processing : Output binary file "
 		
 		# debug data to dump out information about the packet stream
@@ -2459,18 +2610,22 @@ class VgmStream:
 		# send author
 		author = self.gd3_data['artist_eng'].decode("utf_16")
 		author = author.encode('ascii', 'ignore')
+
 		# use filename if no author listed
 		if len(author) == 0:
 			author = basename(self.vgm_filename)
-		
+
 		if len(author) > 254:
 			author = author[:254]
 		output_block.append(struct.pack('B', len(author) + 1))	# author string length
 		output_block.extend(author)
 		output_block.append(struct.pack('B', 0))				# zero terminator
 		
-		# send data
-		output_block.extend(data_block)
+		# send data with or without header
+		if rawheader:
+			output_block.extend(data_block)
+		else:
+			output_block = data_block
 		
 		# write file
 		print "Compressed VGM is " + str(len(output_block)) + " bytes long"
@@ -2529,7 +2684,7 @@ if argc < 2:
 	print " Supports gzipped VGM or .vgz files."
 	print ""
 	print " Usage:"
-	print "  vgmconverter <vgmfile> [-transpose <n>] [-quantize <n>] [-filter <n>] [-rawfile <filename>] [-output <filename>] [-dump] [-verbose]"
+	print "  vgmconverter <vgmfile> [-transpose <n>] [-quantize <n>] [-filter <n>] [-rawfile <filename>] [-output <filename>] [-length] [-norawheader] [-dump] [-verbose]"
 	print ""
 	print "   where:"
 	print "    <vgmfile> is the source VGM file to be processed. Wildcards are not yet supported."
@@ -2540,6 +2695,9 @@ if argc < 2:
 	print "    [-filter <n>, -n <n>] strip one or more output channels from the VGM. For <n> specify a string of channels to filter eg. '0123' or '13' etc."
 	print "    [-rawfile <filename>, -r <filename>] output a raw binary file version of the chip data within the source VGM. A default quantization of 60Hz will be applied if not specified with -q"
 	print "    [-output <filename>, -o <filename>] specifies the filename to output a processed VGM. Optional."
+	print "    [-length <secs>, -l <secs>] limits output to <secs> seconds. Optional."	
+	print "    [-norawheader, -n] removes header from raw file output. Optional."	
+	
 	print "    [-dump] output human readable version of the VGM"
 	print "    [-verbose] enable debug information"
 	exit()
@@ -2596,6 +2754,7 @@ option_filter = None
 option_rawfile = None
 option_dump = None
 option_length = None
+option_rawheader = True		# determines if header added to raw output
 
 # process command line
 for i in range(2, len(argv)):
@@ -2626,7 +2785,10 @@ for i in range(2, len(argv)):
 									if option == 'l' or option == 'length':
 										option_length = argv[i+1]
 									else:
-										print "ERROR: Unrecognised option '" + arg + "'"
+										if option == 'n' or option == 'norawheader':
+											option_rawheader = False
+										else:
+											print "ERROR: Unrecognised option '" + arg + "'"
 
 # load the VGM
 if source_filename == None:
@@ -2703,9 +2865,9 @@ if option_quantize != None:
 	vgm_stream.optimize()
 
 
-# emit a raw binary file if required
+# emit a raw binary file if required, rawheader is on by default
 if option_rawfile != None:
-	vgm_stream.write_binary(option_rawfile)
+	vgm_stream.write_binary(option_rawfile, option_rawheader)
 
 # write out the processed VGM if required
 if option_outputfile != None:
