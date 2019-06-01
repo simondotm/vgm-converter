@@ -42,7 +42,7 @@ Transpose the source VGM to a new frequency. For clocktype, specify 'ntsc' (3.57
 
 Quantize the VGM to a specific playback update interval. For n, specify an integer Hz value
 
-`[-filter <n>, -n <n>] `
+`[-filter <n>, -f <n>] `
 
 Strip one or more output channels from the VGM. For n, specify a string of channels to filter eg. '0123' or '13' etc.
 
@@ -53,6 +53,10 @@ Output a raw binary file version of the chip data within the source VGM. A defau
 `[-output <filename>, -o <filename>] `
 
 Specifies the output filename for the processed VGM. It is optional as sometimes it's useful to process a VGM file only for informational purposes.
+
+`[-norawheader, -n] `
+
+This option (when used with `-r`) will strip headers from the RAW file, which is useful when minimum filesize is needed and no music meta data is needed.
 
 `[-dump, -d] `
 
@@ -89,7 +93,9 @@ All of the above:
 
 ## Raw data file format
 
-Intended as a compact data format of the VGM for memory-constrained 8-bit platforms, the binary format is structured as follows:
+Since VGM is a complex and memory hungry format, I created a simplified byte-stream version of a VGM data stream specifically for the SN76489, which is intended for use as a compact data format of the VGM for memory-constrained 8-bit platforms.
+
+The binary `.RAW` or `.BIN` format (whichever you prefer!) is structured as follows:
 
 ```
 <header section>
@@ -105,6 +111,7 @@ Intended as a compact data format of the VGM for memory-constrained 8-bit platfo
 <author section>
  [byte] - author string size
  [dd] ... - ZT author string
+</header section>
 <packets section>
  [byte] - indicating number of data writes within the current packet (max 11)
  [dd] ... - data
@@ -114,14 +121,21 @@ Intended as a compact data format of the VGM for memory-constrained 8-bit platfo
 <eof section>
  [0xff] - eof
 ```	
-	
+### `RAW` file format notes
 * SN76489 sound chip data is organised into a stream of packets - 1 packet per playback interval (50Hz = 20ms etc.)
 * Each packet contains a header byte followed by upto 11 bytes of sound chip data
 * Max packet length can only be 11 bytes as that is all that is needed to update all SN tone + volume registers for all 4 channels in one interval.
 * The header byte for the packet indicates how many data bytes are in the packet, or 0 if no data needs to be sent to the sound chip for this interval.
 * This is then repeated for the duration of the song
 * The file ends with 0xFF
+* Headers can be stripped, however there is no way to detect if headers are present or not.
 
 There is no support for looping in this format (yet).
+
+This format compresses reasonably well (using a packer like Exomizer), but for **much** better compression take a look at [Vgm Packer](https://github.com/simondotm/vgm-packer).
+
+## VGM Playback for the 6502 BBC Micro
+
+See [Vgm Player](https://github.com/simondotm/vgm-player-bbc) for examples of how to play back VGM music with this `.RAW` data format.
 
 
